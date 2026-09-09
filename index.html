@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AC Day Router</title>
+
+<!-- Home-screen install. This is the whole point of Stage 01: iOS Safari wipes
+     script-writable storage after 7 days of no visit, UNLESS the page was added
+     to the home screen as a standalone app.
+     https://webkit.org/blog/10218/full-third-party-cookie-blocking-and-more/ -->
+<link rel="manifest" href="manifest.json">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Day Router">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" href="icons/icon-192.png" sizes="192x192">
+<meta name="theme-color" content="#EDF1F4" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0E1820" media="(prefers-color-scheme: dark)">
+
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="mast">
+  <div class="mast-in">
+    <div class="mast-top">
+      <div class="logo"><b>AC Day Router</b><span>Tri-County</span></div>
+      <div class="heatbar">
+        <label for="hi">High °F</label>
+        <input id="hi" class="mono" type="text" inputmode="numeric" value="94">
+        <span class="cutoff">Attic/roof by <b id="cutoffTxt">10:30a</b></span>
+      </div>
+    </div>
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" data-tab="today" aria-selected="true">Today</button>
+      <button class="tab" role="tab" data-tab="new" aria-selected="false">New call</button>
+      <button class="tab" role="tab" data-tab="queue" aria-selected="false">Waiting <span class="ct" id="qct">0</span></button>
+      <button class="tab" role="tab" data-tab="rules" aria-selected="false">Rules &amp; setup</button>
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <!-- ================= TODAY ================= -->
+  <section id="v-today">
+    <div class="sec-head">
+      <h2 id="dayTitle">Today's run</h2>
+      <span class="note" id="daySub"></span>
+    </div>
+    <div id="exNote"></div>
+    <div class="readout" id="dayReadout"></div>
+    <div id="dayPlan"></div>
+    <div class="sec-head"><h2>What the batching saves</h2><span class="note">vs. driving them in the order the phone rang</span></div>
+    <div class="savings" id="savings"></div>
+  </section>
+
+  <!-- ================= NEW CALL ================= -->
+  <section id="v-new" hidden>
+    <div class="sec-head">
+      <h2>New call</h2>
+      <span class="note">Tap through it while they're still on the phone — 6 taps, two typed fields.</span>
+    </div>
+    <div class="readout" id="liveCalc"></div>
+    <div class="grid2">
+      <div>
+        <div class="field">
+          <label for="f-name">Customer <span class="hint">and phone</span></label>
+          <input id="f-name" type="text" placeholder="Name" autocomplete="off">
+          <div style="height:8px"></div>
+          <input id="f-phone" type="tel" placeholder="Phone" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="f-addr">Address <span class="hint">street only — city below</span></label>
+          <input id="f-addr" type="text" placeholder="1420 NW 12th Ave" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="f-city">City</label>
+          <select id="f-city"></select>
+        </div>
+        <div class="field">
+          <label>What they said is wrong</label>
+          <div class="chips" id="c-symptom"></div>
+        </div>
+      </div>
+      <div>
+        <div class="field">
+          <label>Where the unit is <span class="hint">decides the time of day</span></label>
+          <div class="chips" id="c-access"></div>
+        </div>
+        <div class="field">
+          <label>System</label>
+          <div class="chips" id="c-size"></div>
+        </div>
+        <div class="field">
+          <label>How soon</label>
+          <div class="chips" id="c-urgency"></div>
+        </div>
+        <div class="field">
+          <label>Crew</label>
+          <div class="chips" id="c-crew"></div>
+        </div>
+        <div class="field">
+          <label for="f-note">Note <span class="hint">gate code, dog, tenant, unit #</span></label>
+          <textarea id="f-note" placeholder="Gate code 4412. Dog in yard. Call before."></textarea>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= QUEUE ================= -->
+  <section id="v-queue" hidden>
+    <div class="sec-head">
+      <h2>Waiting to be scheduled</h2>
+      <span class="note">Grouped by route zone. Each zone gets its own day so nobody drives the corridor twice.</span>
+    </div>
+    <div id="queueList"></div>
+  </section>
+
+  <!-- ================= RULES ================= -->
+  <section id="v-rules" hidden>
+    <div class="sec-head"><h2>The three rules this runs on</h2></div>
+
+    <div class="card pad" style="margin-bottom:14px">
+      <div class="eyebrow">Rule 1 — Zone days</div>
+      <h3 class="disp" style="font-size:15.5px;margin:5px 0 7px">One zone per day. Emergencies break the rule; nothing else does.</h3>
+      <p style="margin:0 0 12px;color:var(--ink-2);font-size:13.5px">Miami to Boca Raton is 45–50 miles and 50–70 minutes, 90 in traffic. Two round trips up the corridor in one day is 4 wasted hours. Maintenance, quotes, drain clogs and reschedules can all wait two days — so they get batched by zone.</p>
+      <div class="tscroll"><table id="zoneTable"></table></div>
+    </div>
+
+    <div class="card pad" style="margin-bottom:14px">
+      <div class="eyebrow">Rule 2 — Hot places early</div>
+      <h3 class="disp" style="font-size:15.5px;margin:5px 0 7px">Attic and roof before the cutoff. Indoor units in the afternoon.</h3>
+      <p style="margin:0 0 12px;color:var(--ink-2);font-size:13.5px">A South Florida attic passes 130–140°F within minutes of a mid-90s afternoon. 6–9a is the window for real attic work; 9–10:30a is short diagnostics only; 11a–5p should be emergencies only. So the day sorts hot-first, and the app moves any attic job that lands past the cutoff to the next morning instead of cooking a tech.</p>
+      <div class="tscroll"><table id="cutTable"></table></div>
+    </div>
+
+    <div class="card pad" style="margin-bottom:14px">
+      <div class="eyebrow">Rule 3 — Honest time blocks</div>
+      <h3 class="disp" style="font-size:15.5px;margin:5px 0 7px">Symptom sets the base. Access and tonnage stretch it.</h3>
+      <p style="margin:0 0 12px;color:var(--ink-2);font-size:13.5px">Booking every call as "one hour" is what makes the day collapse by 2pm. Base minutes are one tech, small system, easy access; the multipliers do the rest. Two techs cut it to 65%, not 50% — someone still has to talk to the customer and write it up.</p>
+      <div class="tscroll"><table id="symTable"></table></div>
+      <div style="height:14px"></div>
+      <div class="tscroll"><table id="multTable"></table></div>
+    </div>
+
+    <div class="card pad">
+      <div class="eyebrow">Setup</div>
+      <h3 class="disp" style="font-size:15.5px;margin:5px 0 10px">Numbers to match his truck</h3>
+      <div id="settingsForm"></div>
+
+      <div style="height:20px"></div>
+      <div class="eyebrow">Where his work is stored</div>
+      <h3 class="disp" style="font-size:15.5px;margin:5px 0 9px">Backup</h3>
+      <div class="savenote" id="storeStatus"></div>
+      <div class="bk">
+        <button class="btn ghost sm" id="bkSave">Save a backup file</button>
+        <button class="btn ghost sm" id="bkLoad">Restore from a backup</button>
+      </div>
+      <div id="bkBox">
+        <textarea id="bkText" spellcheck="false" placeholder="Paste the contents of a backup file here, then press Restore."></textarea>
+        <div style="height:8px"></div>
+        <button class="btn sm" id="bkDo">Restore these jobs</button>
+        <button class="btn ghost sm" id="bkClose">Cancel</button>
+      </div>
+
+      <div style="height:20px"></div>
+      <div class="eyebrow">Danger zone</div>
+      <div style="height:8px"></div>
+      <button class="btn ghost sm" id="resetEx">Load the example jobs</button>
+      <button class="btn danger sm" id="wipe">Delete everything</button>
+    </div>
+  </section>
+</div>
+
+<!-- ================= CALL SHEET ================= -->
+<!-- Full screen, one stop at a time, read out loud over the phone. -->
+<div class="sheet" id="sheet" hidden>
+  <div class="sheet-top">
+    <div class="sheet-where" id="sheetWhere"></div>
+    <button class="sheet-x" id="sheetX" aria-label="Close the call sheet">Close</button>
+  </div>
+  <div class="sheet-dots" id="sheetDots"></div>
+  <div class="sheet-body" id="sheetBody"></div>
+  <div class="sheet-nav">
+    <button class="btn ghost" id="sheetPrev">Back</button>
+    <button class="btn" id="sheetNext">Next stop</button>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<div class="modal" id="modal" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="mTitle">
+    <h3 id="mTitle"></h3>
+    <p id="mBody"></p>
+    <div class="modal-acts">
+      <button class="btn ghost" id="mCancel">Cancel</button>
+      <button class="btn" id="mOk">OK</button>
+    </div>
+  </div>
+</div>
+
+<div class="stickybar" id="stickybar"></div>
+
+
+<script src="app.js"></script>
+</body>
+</html>
