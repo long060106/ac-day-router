@@ -30,6 +30,7 @@ browser; GitHub Pages holds the code and never touches the data.
 | `style.css` | All styling |
 | `app.js` | All logic — zones, durations, heat cutoffs, routing, call sheet |
 | `manifest.json` | Makes it installable to the iPhone home screen |
+| `service-worker.js` | Caches the app so it opens with no signal |
 | `icons/` | Home-screen icons (regenerate with `python make_icons.py`) |
 
 ## Why the manifest matters
@@ -41,6 +42,19 @@ So the app **must** be installed via Share → Add to Home Screen, and opened fr
 that icon, or a quiet week will wipe the board.
 
 <https://webkit.org/blog/10218/full-third-party-cookie-blocking-and-more/>
+
+## Deploying a change
+
+`service-worker.js` starts with a `VERSION` string, and that string is the cache
+name. **Bump it on every deploy.** If you don't, phones that already installed the
+app keep serving the previous build out of cache and your fix never arrives.
+
+```
+var VERSION = "2026-09-10a";   // <- change this, then commit and push
+```
+
+Page loads are network-first, so a bumped version reaches him the next time he
+opens the app with a signal. Everything else is served from cache first.
 
 ## Running it locally
 
@@ -56,6 +70,6 @@ differently there.
 
 - [x] **00** Validate — run real calls through the prototype for a week
 - [x] **01** Own page + home-screen icon (file split, manifest, call sheet)
-- [ ] **02** Works with no signal — `service-worker.js`, tested in airplane mode
+- [x] **02** Works with no signal — `service-worker.js`, tested in airplane mode
 - [ ] **03** Storage upgrade — IndexedDB or `sql.js`, plus `navigator.storage.persist()`
 - [ ] **04** Backup — 7-day nag banner, `navigator.share()` to the iOS share sheet, restore via file picker

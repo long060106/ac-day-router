@@ -975,4 +975,10 @@ if(!had && !state.seeded){          // examples ONCE, on a genuinely new device
 }
 render();
 
+/* Offline shell. If this fails the app is unharmed — it just goes back to
+   needing a signal to open, so there is nothing to report to him. */
+if("serviceWorker" in navigator){
+  navigator.serviceWorker.register("service-worker.js").catch(function(){});
+}
+
 })();
