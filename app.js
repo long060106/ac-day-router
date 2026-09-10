@@ -158,9 +158,6 @@ function routedMins(r){var m=0;r.stops.forEach(function(s){m+=s.driveMin;});retu
 
 /* ============================================================
    STATE + STORAGE — localStorage on this one phone, and nowhere else.
-   VI: Dữ liệu chỉ nằm trong trình duyệt của MỘT chiếc điện thoại. Không
-   máy chủ, không đồng bộ, không tài khoản — đó là quyết định cố ý, không
-   phải thiếu sót. Đừng thêm máy chủ vào ở các stage sau.
    ============================================================ */
 var state={jobs:[],settings:Object.assign({},DEF),tab:"today",hi:94,draft:blankDraft(),
            seeded:false,savedAt:0,saveError:false};
@@ -735,12 +732,6 @@ function addJob(){
    reads this out to the tech. So every stop also gets a spoken
    line — "fourteen seventy-seven Northwest Fortieth Terrace" —
    because nobody says "1477 NW 40th Ter" out loud.
-
-   VI: Chủ tiệm điều phối thợ HOÀN TOÀN bằng điện thoại, không nhắn tin.
-   Nên mỗi điểm dừng có thêm một dòng "đọc thành lời": địa chỉ được đổi
-   sang cách người ta phát âm, vì không ai đọc "1477 NW 40th Ter" đúng
-   như chữ viết cả. Mã cổng thì đọc từng số MỘT và vẫn hiện nguyên bản
-   bên dưới, để anh ta còn bấm được.
    ============================================================ */
 var ONES=["zero","one","two","three","four","five","six","seven","eight","nine","ten",
           "eleven","twelve","thirteen","fourteen","fifteen","sixteen","seventeen",
