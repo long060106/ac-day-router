@@ -71,7 +71,11 @@ var VERSION = "2026-09-10a";   // <- change this, then commit and push
 ```
 
 Page loads are network-first, so a bumped version reaches him the next time he
-opens the app with a signal. Everything else is served from cache first.
+opens the app with a signal. Everything else is served from cache first, which
+means **a deploy takes two launches to appear**: the first launch fetches the new
+files into a fresh cache, the second runs them. That is the deliberate trade —
+network-first on every file would hang on a weak signal instead of failing fast,
+and weak signal is his normal working condition.
 
 ## Running it locally
 

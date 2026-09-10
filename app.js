@@ -185,11 +185,10 @@ function hydrate(j){
    store failing is worth more than the tidiness of a clean cutover. */
 var IDB_NAME="acdayrouter", IDB_STORE="state", IDB_KEY="current", idbP=null;
 
-function idbOpen(){
-  if(idbP)return idbP;
-  idbP=new Promise(function(res,rej){
+function idbOpenAt(v){
+  return new Promise(function(res,rej){
     if(!window.indexedDB){rej(new Error("no indexedDB"));return;}
-    var req=indexedDB.open(IDB_NAME,1);
+    var req=indexedDB.open(IDB_NAME,v);
     req.onupgradeneeded=function(){
       var db=req.result;
       if(!db.objectStoreNames.contains(IDB_STORE))db.createObjectStore(IDB_STORE);
@@ -197,6 +196,19 @@ function idbOpen(){
     req.onsuccess=function(){res(req.result);};
     req.onerror=function(){rej(req.error);};
     req.onblocked=function(){rej(new Error("blocked"));};
+  });
+}
+function idbOpen(){
+  if(idbP)return idbP;
+  idbP=idbOpenAt(1).then(function(db){
+    /* An upgrade interrupted halfway can leave the database present but the
+       object store missing. Without this the app would quietly fall back to
+       the mirror forever; reopening one version higher runs onupgradeneeded
+       again and rebuilds the store. */
+    if(db.objectStoreNames.contains(IDB_STORE))return db;
+    var next=db.version+1;
+    db.close();
+    return idbOpenAt(next);
   });
   return idbP;
 }
