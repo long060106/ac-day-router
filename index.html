@@ -8,7 +8,12 @@
 <!-- Home-screen install. This is the whole point of Stage 01: iOS Safari wipes
      script-writable storage after 7 days of no visit, UNLESS the page was added
      to the home screen as a standalone app.
-     https://webkit.org/blog/10218/full-third-party-cookie-blocking-and-more/ -->
+     https://webkit.org/blog/10218/full-third-party-cookie-blocking-and-more/
+
+     VI: Đây là lý do tồn tại của Stage 01. Safari trên iOS xoá sạch dữ liệu
+     JavaScript lưu trong trình duyệt sau 7 ngày không mở trang (chính sách ITP
+     của Apple) — TRỪ KHI trang đã được thêm vào màn hình chính dạng standalone.
+     Bỏ khối thẻ này đi là mất toàn bộ lịch làm việc sau một tuần vắng khách. -->
 <link rel="manifest" href="manifest.json">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -206,6 +211,11 @@
 <div class="stickybar" id="stickybar"></div>
 
 
+<!-- app.js loads at the END of <body> on purpose: it is an IIFE that touches the
+     DOM the moment it runs, so every element above must already exist.
+     VI: app.js phải nằm ở CUỐI <body>. Nó là một IIFE chạy ngay lập tức và đụng
+     vào DOM, nên toàn bộ phần tử phía trên bắt buộc phải tồn tại trước. Đưa nó
+     lên <head> thì mọi $("#id") sẽ trả về null và app chết ngay khi mở. -->
 <script src="app.js"></script>
 </body>
 </html>
