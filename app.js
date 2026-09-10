@@ -157,11 +157,14 @@ function naiveMiles(list,baseNi){
 function routedMins(r){var m=0;r.stops.forEach(function(s){m+=s.driveMin;});return m+legMin(r.homeMi);}
 
 /* ============================================================
-   STATE + STORAGE (db when granted, localStorage otherwise)
+   STATE + STORAGE — localStorage on this one phone, and nowhere else.
+   VI: Dữ liệu chỉ nằm trong trình duyệt của MỘT chiếc điện thoại. Không
+   máy chủ, không đồng bộ, không tài khoản — đó là quyết định cố ý, không
+   phải thiếu sót. Đừng thêm máy chủ vào ở các stage sau.
    ============================================================ */
 var state={jobs:[],settings:Object.assign({},DEF),tab:"today",hi:94,draft:blankDraft(),
            seeded:false,savedAt:0,saveError:false};
-var db=null, dl=null, LS="acdayrouter.v1";
+var LS="acdayrouter.v1";
 
 function blankDraft(){
   return {name:"",phone:"",addr:"",city:"Fort Lauderdale",symptom:"nocool_dead",
@@ -202,15 +205,10 @@ function payload(){
     settings:state.settings, hi:state.hi
   },null,2);
 }
-function persist(j){
-  saveLocal();
-  if(db){ db.collection("jobs").doc(j.id).set(j).catch(function(){}); }
-}
-function removeRemote(id){ if(db){ db.collection("jobs").doc(id).delete().catch(function(){}); } }
-function persistSettings(){
-  saveLocal();
-  if(db){ db.doc("config/settings").set({settings:state.settings,hi:state.hi}).catch(function(){}); }
-}
+/* There is one device and no server, so "persist" just means the phone.
+   Kept as named calls because the call sites read better that way. */
+function persist(j){ saveLocal(); }
+function persistSettings(){ saveLocal(); }
 
 /* ============================================================
    EXAMPLE DAY — a realistic 8-call backlog, clearly marked
@@ -364,7 +362,7 @@ function toast(msg){
 }
 function dropJob(id,msg){
   state.jobs=state.jobs.filter(function(j){return j.id!==id;});
-  removeRemote(id);saveLocal();render();toast(msg);
+  saveLocal();render();toast(msg);
 }
 function jobById(id){for(var i=0;i<state.jobs.length;i++){if(state.jobs[i].id===id)return state.jobs[i];}return null;}
 
@@ -388,7 +386,6 @@ function renderToday(){
         "Removes all "+n+" sample jobs. Anything you added yourself stays, and the examples will not come back on their own.",
         "Clear examples","",
         function(){
-          state.jobs.filter(function(j){return j.example;}).forEach(function(j){removeRemote(j.id);});
           state.jobs=state.jobs.filter(function(j){return !j.example;});
           saveLocal();render();toast("Examples cleared");
         });
@@ -649,20 +646,12 @@ function renderRules(){
   var when = state.savedAt ? new Date(state.savedAt).toLocaleString(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : "not yet";
   $("#storeStatus").innerHTML = state.saveError
     ? '<b>This browser is blocking storage.</b> Nothing is being kept between visits \u2014 usually private/incognito mode. Open the page in a normal window.'
-    : (db
-      ? '<b>Synced to the account.</b> Every job is kept on the server and comes back on any phone signed into this account. Last write: '+esc(when)+'.'
-      : '<b>Kept on this phone.</b> Jobs stay through reloads, restarts and new days \u2014 they do not expire. But they live in this one browser: clearing browsing data or switching phones loses them, so save a backup file now and then. Last write: '+esc(when)+'.');
+    : ('<b>Kept on this phone.</b> Jobs stay through reloads, restarts and new days \u2014 they do not expire. But they live in this one browser: clearing browsing data or switching phones loses them, so save a backup file now and then. Last write: '+esc(when)+'.');
 
   $("#bkSave").onclick=function(){
     var txt=payload(), n=state.jobs.filter(function(j){return !j.example;}).length;
     var fname="ac-day-router-"+new Date().toISOString().slice(0,10)+".json";
-    if(dl){
-      dl.save({filename:fname,data:txt}).then(function(){toast("Backup saved");})
-        .catch(function(e){
-          if(e&&e.code==="declined")return;
-          showBackupText(txt,n);
-        });
-    } else { showBackupText(txt,n); }
+    showBackupText(txt,n);
   };
   $("#bkLoad").onclick=function(){
     $("#bkBox").style.display="block";$("#bkText").value="";$("#bkText").focus();
@@ -678,11 +667,9 @@ function renderRules(){
         "This replaces everything currently on the board with the contents of the backup.",
         "Restore","danger",
         function(){
-          state.jobs.forEach(function(j){removeRemote(j.id);});
           state.jobs=d2.jobs.map(hydrate);
           if(d2.settings)state.settings=Object.assign({},DEF,d2.settings);
           if(d2.hi)state.hi=d2.hi;
-          state.jobs.forEach(function(j){persist(j);});
           saveLocal();$("#bkBox").style.display="none";render();
           toast("Restored "+d2.jobs.length+" jobs");
         });
@@ -698,7 +685,6 @@ function renderRules(){
         "All "+n+" job"+(n===1?"":"s")+" will be permanently deleted. Settings stay. Save a backup first if you are not sure — this cannot be undone.",
         "Delete all "+n,"danger",
         function(){
-          state.jobs.forEach(function(j){removeRemote(j.id);});
           state.jobs=[];saveLocal();render();toast("Board cleared");
         });
   };
@@ -749,6 +735,12 @@ function addJob(){
    reads this out to the tech. So every stop also gets a spoken
    line — "fourteen seventy-seven Northwest Fortieth Terrace" —
    because nobody says "1477 NW 40th Ter" out loud.
+
+   VI: Chủ tiệm điều phối thợ HOÀN TOÀN bằng điện thoại, không nhắn tin.
+   Nên mỗi điểm dừng có thêm một dòng "đọc thành lời": địa chỉ được đổi
+   sang cách người ta phát âm, vì không ai đọc "1477 NW 40th Ter" đúng
+   như chữ viết cả. Mã cổng thì đọc từng số MỘT và vẫn hiện nguyên bản
+   bên dưới, để anh ta còn bấm được.
    ============================================================ */
 var ONES=["zero","one","two","three","four","five","six","seven","eight","nine","ten",
           "eleven","twelve","thirteen","fourteen","fifteen","sixteen","seventeen",
@@ -960,27 +952,4 @@ if(!had && !state.seeded){          // examples ONCE, on a genuinely new device
 }
 render();
 
-/* db, if this viewer has it. Page already works without it. */
-if(window.claude&&window.claude.use){
-  window.claude.use("downloads").then(function(x){dl=x;}).catch(function(){});
-  window.claude.use("db").then(function(d){
-    if(!d)return;
-    db=d;
-    d.doc("config/settings").get().then(function(s){
-      if(s.exists){var v=s.data();if(v.settings)state.settings=Object.assign({},DEF,v.settings);if(v.hi)state.hi=v.hi;saveLocal();render();}
-    }).catch(function(){});
-    d.collection("jobs").onSnapshot(function(snap){
-      if(snap.empty){
-        // First sync only: seed the server from this device, real jobs only.
-        state.jobs.filter(function(j){return !j.example;})
-          .forEach(function(j){d.collection("jobs").doc(j.id).set(j).catch(function(){});});
-        return;
-      }
-      var seen={},out=[];
-      snap.docs.forEach(function(doc){var v=doc.data();if(v&&v.id&&!seen[v.id]){seen[v.id]=1;out.push(hydrate(v));}});
-      state.jobs=out;saveLocal();render();
-    },function(){});
-    if(state.tab==="rules")renderRules();
-  }).catch(function(){});
-}
 })();
