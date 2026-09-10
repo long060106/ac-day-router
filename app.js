@@ -648,7 +648,7 @@ function renderRules(){
   $("#bkSave").onclick=function(){
     var txt=payload(), n=state.jobs.filter(function(j){return !j.example;}).length;
     var fname="ac-day-router-"+new Date().toISOString().slice(0,10)+".json";
-    showBackupText(txt,n);
+    saveBackup(txt,fname,n);
   };
   $("#bkLoad").onclick=function(){
     $("#bkBox").style.display="block";$("#bkText").value="";$("#bkText").focus();
@@ -685,6 +685,38 @@ function renderRules(){
           state.jobs=[];saveLocal();render();toast("Board cleared");
         });
   };
+}
+
+/* Get the backup off the phone and into somewhere that survives losing it.
+   On iOS the only reliable way out of a standalone web app is the native
+   share sheet, which reaches Files, iCloud Drive, Google Drive and Mail.
+   <a download> is the desktop path; iOS Safari largely ignores it. A box of
+   text he has to select by hand is the last resort, not the plan. */
+function saveBackup(txt,fname,n){
+  var file=null;
+  try{ file=new File([txt],fname,{type:"application/json"}); }catch(e){}
+
+  if(file&&navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){
+    navigator.share({files:[file],title:"AC Day Router backup"})
+      .then(function(){toast("Backup saved");})
+      .catch(function(err){
+        if(err&&err.name==="AbortError")return;      /* he closed the share sheet */
+        showBackupText(txt,n);
+      });
+    return;
+  }
+
+  if(window.URL&&URL.createObjectURL&&"download" in document.createElement("a")){
+    var url=URL.createObjectURL(new Blob([txt],{type:"application/json"}));
+    var a=document.createElement("a");
+    a.href=url;a.download=fname;
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    setTimeout(function(){URL.revokeObjectURL(url);},1000);
+    toast("Backup saved — "+n+" job"+(n===1?"":"s"));
+    return;
+  }
+
+  showBackupText(txt,n);
 }
 
 function showBackupText(txt,n){
