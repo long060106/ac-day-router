@@ -54,6 +54,7 @@
       <h2 id="dayTitle">Today's run</h2>
       <span class="note" id="daySub"></span>
     </div>
+    <div id="nagBox"></div>
     <div id="exNote"></div>
     <div class="readout" id="dayReadout"></div>
     <div id="dayPlan"></div>
@@ -161,8 +162,11 @@
       <div class="savenote" id="storeStatus"></div>
       <div class="bk">
         <button class="btn ghost sm" id="bkSave">Save a backup file</button>
-        <button class="btn ghost sm" id="bkLoad">Restore from a backup</button>
+        <button class="btn ghost sm" id="bkLoad">Restore from a file</button>
+        <button class="btn ghost sm" id="bkWeek">Week view — screenshot it</button>
       </div>
+      <input type="file" id="bkFile" accept="application/json,.json" hidden>
+      <div class="bk-alt"><button type="button" class="linkish" id="bkPaste">or paste a backup in as text</button></div>
       <div id="bkBox">
         <textarea id="bkText" spellcheck="false" placeholder="Paste the contents of a backup file here, then press Restore."></textarea>
         <div style="height:8px"></div>
@@ -192,6 +196,17 @@
     <button class="btn ghost" id="sheetPrev">Back</button>
     <button class="btn" id="sheetNext">Next stop</button>
   </div>
+</div>
+
+<!-- ================= WEEK VIEW ================= -->
+<!-- The backup that needs no discipline: he screenshots this, and iOS syncs
+     his photos to iCloud on its own. Survives losing the phone. -->
+<div class="week" id="week" hidden>
+  <div class="week-top">
+    <div class="week-where" id="weekWhere"></div>
+    <button class="sheet-x" id="weekX" aria-label="Close the week view">Close</button>
+  </div>
+  <div class="week-body" id="weekBody"></div>
 </div>
 
 <div class="toast" id="toast" hidden></div>
