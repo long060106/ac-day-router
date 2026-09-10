@@ -160,7 +160,8 @@ function routedMins(r){var m=0;r.stops.forEach(function(s){m+=s.driveMin;});retu
    STATE + STORAGE — localStorage on this one phone, and nowhere else.
    ============================================================ */
 var state={jobs:[],settings:Object.assign({},DEF),tab:"today",hi:94,draft:blankDraft(),
-           seeded:false,savedAt:0,saveError:false,idbOk:null,persisted:null};
+           seeded:false,savedAt:0,saveError:false,idbOk:null,persisted:null,
+           lastBackupAt:0,nagSnoozeUntil:0};
 var LS="acdayrouter.v1";
 
 function blankDraft(){
@@ -242,7 +243,8 @@ function idbSave(rec){
 /* ---------- saving ---------- */
 function snapshot(){
   return { v:1, seeded:true, jobs:state.jobs, settings:state.settings,
-           hi:state.hi, savedAt:Date.now() };
+           hi:state.hi, savedAt:Date.now(),
+           lastBackupAt:state.lastBackupAt, nagSnoozeUntil:state.nagSnoozeUntil };
 }
 function mirrorToLocal(rec){
   try{ localStorage.setItem(LS,JSON.stringify(rec)); state.lsOk=true; }
@@ -263,6 +265,8 @@ function adoptRecord(d){
   if(d.settings){state.settings=Object.assign({},DEF,d.settings);}
   if(d.hi){state.hi=d.hi;}
   state.savedAt=d.savedAt||0;
+  state.lastBackupAt=d.lastBackupAt||0;
+  state.nagSnoozeUntil=d.nagSnoozeUntil||0;
 }
 function loadLocal(){
   try{
@@ -447,6 +451,8 @@ function renderToday(){
   $("#daySub").innerHTML = d.overflow
     ? 'Overflow day — no zone assigned, so it’s working the fullest one: <b>'+esc(d.zone.name)+'</b>.'
     : 'Zone day: <b>'+esc(d.zone.name)+'</b> — '+esc(d.zone.range)+'. Emergencies anywhere still go today.';
+
+  renderNag();
 
   // example banner
   var hasEx=state.jobs.some(function(j){return j.example;});
@@ -728,32 +734,21 @@ function renderRules(){
     : ('<b>Kept on this phone.</b> Jobs are stored '+where+', so a reload, a restart or a week off does not touch them.'+prot+
        ' They still live on this one phone: erasing the app or switching phones loses them, so save a backup now and then. Last write: '+esc(when)+'.');
 
-  $("#bkSave").onclick=function(){
-    var txt=payload(), n=state.jobs.filter(function(j){return !j.example;}).length;
-    var fname="ac-day-router-"+new Date().toISOString().slice(0,10)+".json";
-    saveBackup(txt,fname,n);
+  $("#bkSave").onclick=doBackup;
+  $("#bkWeek").onclick=openWeek;
+  $("#bkLoad").onclick=function(){ $("#bkFile").value=""; $("#bkFile").click(); };
+  $("#bkFile").onchange=function(){
+    var f=this.files&&this.files[0]; if(!f)return;
+    var rd=new FileReader();
+    rd.onload=function(){ tryRestore(String(rd.result)); };
+    rd.onerror=function(){ toast("Could not read that file"); };
+    rd.readAsText(f);
   };
-  $("#bkLoad").onclick=function(){
+  $("#bkPaste").onclick=function(){
     $("#bkBox").style.display="block";$("#bkText").value="";$("#bkText").focus();
   };
   $("#bkClose").onclick=function(){$("#bkBox").style.display="none";};
-  $("#bkDo").onclick=function(){
-    var raw=$("#bkText").value.trim();
-    if(!raw){toast("Paste a backup first");return;}
-    var d2;
-    try{d2=JSON.parse(raw);}catch(e){toast("That is not a valid backup file");return;}
-    if(!d2||!d2.jobs||!d2.jobs.length){toast("No jobs found in that backup");return;}
-    ask("Restore "+d2.jobs.length+" job"+(d2.jobs.length===1?"":"s")+"?",
-        "This replaces everything currently on the board with the contents of the backup.",
-        "Restore","danger",
-        function(){
-          state.jobs=d2.jobs.map(hydrate);
-          if(d2.settings)state.settings=Object.assign({},DEF,d2.settings);
-          if(d2.hi)state.hi=d2.hi;
-          saveLocal();$("#bkBox").style.display="none";render();
-          toast("Restored "+d2.jobs.length+" jobs");
-        });
-  };
+  $("#bkDo").onclick=function(){ tryRestore($("#bkText").value); };
   $("#resetEx").onclick=function(){
     ask("Load the example jobs?","Adds 18 sample jobs alongside his real ones, so you can see the routing work. They are labelled and can be cleared again.",
         "Load examples","",
@@ -781,7 +776,7 @@ function saveBackup(txt,fname,n){
 
   if(file&&navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){
     navigator.share({files:[file],title:"AC Day Router backup"})
-      .then(function(){toast("Backup saved");})
+      .then(function(){markBackedUp();toast("Backup saved");})
       .catch(function(err){
         if(err&&err.name==="AbortError")return;      /* he closed the share sheet */
         showBackupText(txt,n);
@@ -795,6 +790,7 @@ function saveBackup(txt,fname,n){
     a.href=url;a.download=fname;
     document.body.appendChild(a);a.click();document.body.removeChild(a);
     setTimeout(function(){URL.revokeObjectURL(url);},1000);
+    markBackedUp();
     toast("Backup saved — "+n+" job"+(n===1?"":"s"));
     return;
   }
@@ -1009,6 +1005,143 @@ document.addEventListener("keydown",function(ev){
   if(ev.key==="Escape")closeSheet();
   if(ev.key==="ArrowRight")stepSheet(1);
   if(ev.key==="ArrowLeft")stepSheet(-1);
+});
+
+/* ============================================================
+   BACKUP NAG — the app knows when he last got a copy off the phone,
+   and says so on the Today tab. Silent while there is nothing real to
+   lose, because nagging about sample data teaches him to ignore it.
+   ============================================================ */
+var NAG_DAYS=7, DAY_MS=86400000;
+
+function realJobCount(){
+  return state.jobs.filter(function(j){return !j.example;}).length;
+}
+/* 0 = nothing to say, -1 = never backed up, N = N days since the last one */
+function backupDue(){
+  if(realJobCount()===0)return 0;
+  if(state.nagSnoozeUntil && Date.now()<state.nagSnoozeUntil)return 0;
+  if(!state.lastBackupAt)return -1;
+  var days=Math.floor((Date.now()-state.lastBackupAt)/DAY_MS);
+  return days>=NAG_DAYS ? days : 0;
+}
+function markBackedUp(){
+  state.lastBackupAt=Date.now();
+  state.nagSnoozeUntil=0;
+  saveLocal();
+  render();
+}
+function doBackup(){
+  var n=realJobCount();
+  saveBackup(payload(),"ac-day-router-"+new Date().toISOString().slice(0,10)+".json",n);
+}
+function renderNag(){
+  var due=backupDue();
+  if(due===0){$("#nagBox").innerHTML="";return;}
+  var n=realJobCount();
+  $("#nagBox").innerHTML=
+    '<div class="nag"><div class="nag-txt"><b>'+
+    (due<0 ? "No backup has ever been saved." : "No backup in "+due+" days.")+
+    '</b><span>'+n+' real job'+(n===1?'':'s')+' exist only on this phone. Losing it loses them.</span></div>'+
+    '<div class="nag-acts">'+
+    '<button class="btn sm" id="nagSave">Save one now</button>'+
+    '<button class="btn ghost sm" id="nagLater">Later</button></div></div>';
+  $("#nagSave").onclick=doBackup;
+  $("#nagLater").onclick=function(){
+    state.nagSnoozeUntil=Date.now()+3*DAY_MS;
+    saveLocal();renderNag();toast("Asking again in 3 days");
+  };
+}
+
+/* ---------- restore, from a file or from pasted text ---------- */
+function tryRestore(raw){
+  raw=String(raw||"").trim();
+  if(!raw){toast("Nothing to restore");return;}
+  var d2;
+  try{d2=JSON.parse(raw);}catch(e){toast("That is not a valid backup file");return;}
+  if(!d2||!d2.jobs||!d2.jobs.length){toast("No jobs found in that backup");return;}
+  ask("Restore "+d2.jobs.length+" job"+(d2.jobs.length===1?"":"s")+"?",
+      "This replaces everything currently on the board with the contents of the backup.",
+      "Restore","danger",
+      function(){
+        state.jobs=d2.jobs.map(hydrate);
+        if(d2.settings)state.settings=Object.assign({},DEF,d2.settings);
+        if(d2.hi)state.hi=d2.hi;
+        saveLocal();$("#bkBox").style.display="none";render();
+        toast("Restored "+d2.jobs.length+" jobs");
+      });
+}
+
+/* ============================================================
+   WEEK VIEW — the backup that survives him forgetting to make one.
+   He screenshots this; iOS syncs photos to iCloud by itself. If the
+   phone goes in a pool, the jobs are still legible in his camera roll,
+   which is why every field needed to rebuild a call is printed here.
+   ============================================================ */
+function openWeek(){
+  $("#week").hidden=false;
+  document.body.style.overflow="hidden";
+  renderWeek();
+  $("#weekBody").scrollTop=0;
+}
+function closeWeek(){
+  $("#week").hidden=true;
+  document.body.style.overflow="";
+}
+function weekJobRow(j){
+  var bits=[sym(j.symptom).label,acc(j.access).label,size(j.size).label];
+  if(j.crew===2)bits.push("2 techs");
+  if(j.urgency==="em")bits.push("EMERGENCY");
+  return '<div class="wk-job">'+
+    '<div class="wk-j1"><b>'+esc(j.name||"No name")+'</b>'+
+      (j.phone?'<span class="mono">'+esc(j.phone)+'</span>':'')+
+      (j.example?'<i class="wk-ex">example</i>':'')+'</div>'+
+    '<div class="wk-j2">'+esc([j.addr,j.city].filter(Boolean).join(", "))+'</div>'+
+    '<div class="wk-j3">'+esc(bits.join(" · "))+'</div>'+
+    (j.note?'<div class="wk-j4">'+esc(j.note)+'</div>':'')+
+    '</div>';
+}
+function renderWeek(){
+  var dt=new Date(), n=state.jobs.length;
+  $("#weekWhere").innerHTML="Whole board &middot; "+n+" job"+(n===1?"":"s")+
+    " &middot; "+(dt.getMonth()+1)+"/"+dt.getDate()+"/"+dt.getFullYear();
+
+  var h='<div class="wk-lead">Screenshot this page. Photos back themselves up to '+
+        'iCloud on their own, so a picture of this survives losing the phone — '+
+        'no remembering required. Scroll and take a second shot if it runs long.</div>';
+
+  if(!n){
+    $("#weekBody").innerHTML=h+'<div class="wk-empty">The board is empty. Nothing to record yet.</div>';
+    return;
+  }
+
+  var ems=state.jobs.filter(function(j){return j.urgency==="em";});
+  if(ems.length){
+    h+='<div class="wk-group"><div class="wk-head hot">Emergencies &middot; '+ems.length+'</div>';
+    ems.forEach(function(j){h+=weekJobRow(j);});
+    h+='</div>';
+  }
+  ZONES.forEach(function(z){
+    var list=state.jobs.filter(function(j){return j.urgency!=="em"&&j.zone===z.id;});
+    if(!list.length)return;
+    list.sort(function(a,b){return a.tier-b.tier||a.ni-b.ni;});
+    h+='<div class="wk-group"><div class="wk-head">'+esc(z.name)+' &middot; '+
+       esc(z.dayName)+' &middot; '+list.length+'</div>';
+    list.forEach(function(j){h+=weekJobRow(j);});
+    h+='</div>';
+  });
+
+  var s=state.settings;
+  h+='<div class="wk-foot">Setup — base '+esc(s.base)+' · start '+esc(s.start)+
+     ' · '+esc(s.hours)+'h per truck · '+esc(s.trucks)+' trucks · '+esc(s.mpg)+
+     ' mpg · $'+esc(s.gas)+'/gal · $'+esc(s.rate)+' per call · high '+esc(state.hi)+'°F</div>';
+
+  $("#weekBody").innerHTML=h;
+}
+
+$("#weekX").onclick=closeWeek;
+document.addEventListener("keydown",function(ev){
+  if(!$("#week").hidden && ev.key==="Escape")closeWeek();
 });
 
 function go(t){

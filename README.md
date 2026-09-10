@@ -60,6 +60,24 @@ IndexedDB has been read. Seeding earlier would call `saveLocal()` and overwrite
 real jobs in IndexedDB with sample data on any phone where localStorage had
 been cleared but IndexedDB survived.
 
+## Backup, three ways
+
+Losing the phone is the only remaining way to lose his work, so there are three
+routes out of it, in descending order of how much discipline they need.
+
+1. **Save a backup file** hands a real `.json` to the iOS share sheet, which
+   reaches Files, iCloud Drive, Google Drive and Mail. **Restore from a file**
+   reads one back through the native file picker. Both are exact, round-trip
+   safe, and restore settings as well as jobs.
+2. **The nag banner** appears on the Today tab once a backup is 7 days old, or
+   has never been made. It stays silent while the board holds nothing but the
+   example jobs — nagging about sample data is how you teach someone to ignore
+   a warning. "Later" snoozes it 3 days.
+3. **Week view** is the backup that needs no discipline at all. He screenshots
+   it and iOS syncs his photos to iCloud by itself. It is not restorable by the
+   app, but every field needed to rebuild a call by hand is printed on it, which
+   is the point: it survives him never once tapping "save a backup".
+
 ## Deploying a change
 
 `service-worker.js` starts with a `VERSION` string, and that string is the cache
@@ -93,4 +111,4 @@ differently there.
 - [x] **01** Own page + home-screen icon (file split, manifest, call sheet)
 - [x] **02** Works with no signal — `service-worker.js`, tested in airplane mode
 - [x] **03** Storage upgrade — IndexedDB, plus `navigator.storage.persist()`
-- [ ] **04** Backup — 7-day nag banner, `navigator.share()` to the iOS share sheet, restore via file picker
+- [x] **04** Backup — 7-day nag banner, `navigator.share()` to the iOS share sheet, restore via file picker, screenshottable Week view
