@@ -160,7 +160,7 @@ function routedMins(r){var m=0;r.stops.forEach(function(s){m+=s.driveMin;});retu
    STATE + STORAGE — localStorage on this one phone, and nowhere else.
    ============================================================ */
 var state={jobs:[],settings:Object.assign({},DEF),tab:"today",hi:94,draft:blankDraft(),
-           seeded:false,savedAt:0,saveError:false};
+           seeded:false,savedAt:0,saveError:false,idbOk:null,persisted:null};
 var LS="acdayrouter.v1";
 
 function blankDraft(){
@@ -174,24 +174,88 @@ function hydrate(j){
   j.ni=ni; j.zone=zoneOf(ni).id; j.tier=acc(j.access).tier; j.dur=duration(j);
   return j;
 }
+/* ---------- IndexedDB ----------
+   The real store. Chosen over sql.js because SQLite-in-WebAssembly is a
+   megabyte of download that still has to persist its database file into
+   IndexedDB in the end — a lot of machinery to run queries nobody needs
+   against a few hundred rows.
+
+   localStorage is kept as a mirror rather than deleted. The data is a few
+   kilobytes and it is his whole business, so a second copy that survives one
+   store failing is worth more than the tidiness of a clean cutover. */
+var IDB_NAME="acdayrouter", IDB_STORE="state", IDB_KEY="current", idbP=null;
+
+function idbOpen(){
+  if(idbP)return idbP;
+  idbP=new Promise(function(res,rej){
+    if(!window.indexedDB){rej(new Error("no indexedDB"));return;}
+    var req=indexedDB.open(IDB_NAME,1);
+    req.onupgradeneeded=function(){
+      var db=req.result;
+      if(!db.objectStoreNames.contains(IDB_STORE))db.createObjectStore(IDB_STORE);
+    };
+    req.onsuccess=function(){res(req.result);};
+    req.onerror=function(){rej(req.error);};
+    req.onblocked=function(){rej(new Error("blocked"));};
+  });
+  return idbP;
+}
+function idbLoad(){
+  return idbOpen().then(function(db){
+    return new Promise(function(res,rej){
+      var r=db.transaction(IDB_STORE,"readonly").objectStore(IDB_STORE).get(IDB_KEY);
+      r.onsuccess=function(){res(r.result||null);};
+      r.onerror=function(){rej(r.error);};
+    });
+  });
+}
+function idbSave(rec){
+  return idbOpen().then(function(db){
+    return new Promise(function(res,rej){
+      var t=db.transaction(IDB_STORE,"readwrite");
+      t.objectStore(IDB_STORE).put(rec,IDB_KEY);
+      t.oncomplete=function(){res(true);};
+      t.onerror=function(){rej(t.error);};
+      t.onabort=function(){rej(t.error);};
+    });
+  }).then(function(){
+    if(state.idbOk!==true){state.idbOk=true;if(state.tab==="rules")renderRules();}
+    return true;
+  }).catch(function(){
+    if(state.idbOk!==false){state.idbOk=false;if(state.tab==="rules")renderRules();}
+    return false;
+  });
+}
+
+/* ---------- saving ---------- */
+function snapshot(){
+  return { v:1, seeded:true, jobs:state.jobs, settings:state.settings,
+           hi:state.hi, savedAt:Date.now() };
+}
+function mirrorToLocal(rec){
+  try{ localStorage.setItem(LS,JSON.stringify(rec)); state.lsOk=true; }
+  catch(e){ state.lsOk=false; }
+}
 function saveLocal(){
-  try{
-    localStorage.setItem(LS,JSON.stringify({
-      v:1, seeded:true, jobs:state.jobs, settings:state.settings,
-      hi:state.hi, savedAt:Date.now()
-    }));
-    state.savedAt=Date.now(); state.saveError=false;
-  }catch(e){ state.saveError=true; }
+  var rec=snapshot();
+  state.savedAt=rec.savedAt;
+  mirrorToLocal(rec);
+  /* Only a real problem when BOTH stores are refusing, which in practice
+     means private browsing. One of the two failing is survivable. */
+  state.saveError = !state.lsOk && state.idbOk===false;
+  idbSave(rec);
+}
+function adoptRecord(d){
+  state.seeded=!!d.seeded;
+  state.jobs = d.jobs ? d.jobs.map(hydrate) : [];   // an empty board is a REAL state
+  if(d.settings){state.settings=Object.assign({},DEF,d.settings);}
+  if(d.hi){state.hi=d.hi;}
+  state.savedAt=d.savedAt||0;
 }
 function loadLocal(){
   try{
     var raw=localStorage.getItem(LS); if(!raw)return false;
-    var d=JSON.parse(raw);
-    state.seeded=!!d.seeded;
-    state.jobs = d.jobs ? d.jobs.map(hydrate) : [];   // an empty board is a REAL state
-    if(d.settings){state.settings=Object.assign({},DEF,d.settings);}
-    if(d.hi){state.hi=d.hi;}
-    state.savedAt=d.savedAt||0;
+    adoptRecord(JSON.parse(raw));
     return true;
   }catch(e){return false;}
 }
@@ -641,9 +705,16 @@ function renderRules(){
   });
 
   var when = state.savedAt ? new Date(state.savedAt).toLocaleString(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : "not yet";
+  var where = state.idbOk===true
+    ? "in the phone\u2019s database, with a second copy alongside it"
+    : "in this browser";
+  var prot = state.persisted===true
+    ? " The phone has marked it <b>protected</b>, so it will not be cleared to make room for anything else."
+    : "";
   $("#storeStatus").innerHTML = state.saveError
     ? '<b>This browser is blocking storage.</b> Nothing is being kept between visits \u2014 usually private/incognito mode. Open the page in a normal window.'
-    : ('<b>Kept on this phone.</b> Jobs stay through reloads, restarts and new days \u2014 they do not expire. But they live in this one browser: clearing browsing data or switching phones loses them, so save a backup file now and then. Last write: '+esc(when)+'.');
+    : ('<b>Kept on this phone.</b> Jobs are stored '+where+', so a reload, a restart or a week off does not touch them.'+prot+
+       ' They still live on this one phone: erasing the app or switching phones loses them, so save a backup now and then. Last write: '+esc(when)+'.');
 
   $("#bkSave").onclick=function(){
     var txt=payload(), n=state.jobs.filter(function(j){return !j.example;}).length;
@@ -969,11 +1040,47 @@ $("#hi").addEventListener("input",function(){
     if(state.tab==="new")renderNew();}
 });
 
-var had=loadLocal();
-if(!had && !state.seeded){          // examples ONCE, on a genuinely new device
-  state.jobs=examples(); state.seeded=true; saveLocal();
-}
+/* Paint immediately from the localStorage mirror — it is synchronous, so
+   there is no blank frame — then let IndexedDB have the last word. */
+var hadLocal=loadLocal();
 render();
+
+/* Seeding the examples is deliberately NOT done here. If localStorage had
+   been cleared but IndexedDB still held his real jobs, seeding now would
+   call saveLocal() and overwrite them with sample data. Nothing is written
+   until we know what IndexedDB actually has. */
+function seedExamples(){
+  state.jobs=examples(); state.seeded=true; saveLocal(); render();
+}
+idbLoad().then(function(rec){
+  state.idbOk=true;
+  if(rec && (rec.savedAt||0) >= (state.savedAt||0)){
+    adoptRecord(rec);
+    mirrorToLocal(rec);   // rebuild the mirror now, not at the next save
+    render(); return;                              // the newer copy wins
+  }
+  if(rec){ idbSave(snapshot()); return; }          // localStorage was ahead; sync it up
+  if(hadLocal || state.seeded){ idbSave(snapshot()); return; }   // first run: migrate
+  seedExamples();                                  // a genuinely new device
+}).catch(function(){
+  state.idbOk=false;                               // no IndexedDB; the mirror carries on
+  if(!hadLocal && !state.seeded) seedExamples();
+});
+
+/* Ask the browser not to evict this data when the phone runs short on space.
+   On iOS the home-screen install is what does the real work; this is the
+   belt to that pair of braces, and it is what protects him everywhere else. */
+if(navigator.storage && navigator.storage.persist){
+  (navigator.storage.persisted ? navigator.storage.persisted() : Promise.resolve(false))
+    .then(function(already){
+      return already ? true : navigator.storage.persist();
+    })
+    .then(function(ok){
+      state.persisted=!!ok;
+      if(state.tab==="rules")renderRules();
+    })
+    .catch(function(){});
+}
 
 /* Offline shell. If this fails the app is unharmed — it just goes back to
    needing a signal to open, so there is nothing to report to him. */
