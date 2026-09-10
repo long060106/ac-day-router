@@ -77,6 +77,10 @@ button{font:inherit;color:inherit;cursor:pointer}
 .mast{
   background:var(--surface);border-bottom:1px solid var(--line);
   position:sticky;top:0;z-index:40;
+  /* Installed to the home screen there is no address bar, so the masthead
+     starts at the very top of the display — right where the clock and the
+     battery live. Reserve that strip. 0px in a normal browser tab. */
+  padding-top:env(safe-area-inset-top,0px);
 }
 .mast-in{max-width:1120px;margin:0 auto;padding:12px 14px 0;display:flex;flex-direction:column;gap:10px}
 .mast-top{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
