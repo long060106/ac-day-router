@@ -43,6 +43,23 @@ that icon, or a quiet week will wipe the board.
 
 <https://webkit.org/blog/10218/full-third-party-cookie-blocking-and-more/>
 
+## Where the data lives
+
+IndexedDB is the store of record; localStorage is kept as a mirror. Both are
+written on every save, and on boot the newer of the two wins. IndexedDB was
+chosen over `sql.js` because SQLite-in-WebAssembly is a megabyte of download
+that still has to persist its database file into IndexedDB anyway — a lot of
+machinery to run queries nobody needs against a few hundred rows.
+
+The mirror is deliberate rather than leftover. The data is a few kilobytes and
+it is his entire business, so a second copy that survives one store being
+cleared is worth more than a tidy single-store cutover.
+
+Boot order matters and is easy to break: the examples are **not** seeded until
+IndexedDB has been read. Seeding earlier would call `saveLocal()` and overwrite
+real jobs in IndexedDB with sample data on any phone where localStorage had
+been cleared but IndexedDB survived.
+
 ## Deploying a change
 
 `service-worker.js` starts with a `VERSION` string, and that string is the cache
@@ -71,5 +88,5 @@ differently there.
 - [x] **00** Validate — run real calls through the prototype for a week
 - [x] **01** Own page + home-screen icon (file split, manifest, call sheet)
 - [x] **02** Works with no signal — `service-worker.js`, tested in airplane mode
-- [ ] **03** Storage upgrade — IndexedDB or `sql.js`, plus `navigator.storage.persist()`
+- [x] **03** Storage upgrade — IndexedDB, plus `navigator.storage.persist()`
 - [ ] **04** Backup — 7-day nag banner, `navigator.share()` to the iOS share sheet, restore via file picker
