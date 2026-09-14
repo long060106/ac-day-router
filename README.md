@@ -1,12 +1,14 @@
 # AC Day Router
 
-Zone-batched dispatch for a one-owner AC/HVAC shop in South Florida
-(Miami-Dade, Broward, south Palm Beach).
+Dispatch for a one-owner AC/HVAC shop in South Florida (Miami-Dade, Broward,
+south Palm Beach).
 
 The owner takes the calls and sends 1–2 techs per job. He never scheduled, so he
-crossed the same 50-mile corridor several times a day. This app batches a day's
-work into one geographic zone, orders the stops so attic and roof work happens
-before the heat, and gives him a page he can read out loud on the phone.
+crossed the same 50-mile corridor several times a day. Every call is an
+emergency, so this app sends each one out as soon as a truck can take it, keeps
+each truck to one stretch of the corridor, orders the stops so attic and roof
+work happens before the heat, and gives him a page he can read out loud on the
+phone.
 
 ## How it works
 
@@ -16,7 +18,19 @@ before the heat, and gives him a page he can read out loud on the phone.
   Every call is treated as an emergency, because people only call when the AC is broken.
 - **Finished jobs are kept.** "Done" moves a job to a Finished list instead of deleting
   it; Undo puts it back.
-- **Zone days.** One corridor zone per weekday. Emergencies break the rule; nothing else does.
+- **Nearby calls together.** Each day the open calls are split across the trucks by
+  position along the corridor, so no truck crosses the county twice. The split tries
+  every place to cut the sorted list and keeps the cheapest, where cost is miles plus
+  customer waiting (`WAIT_MI_PER_HOUR`) plus attic or roof stops past the heat cutoff
+  (`LATE_HOT_MI`). If the calls don't all fit, the newest are set aside, then fitted into
+  whatever room is left on any truck — moving one already-placed call to another truck
+  if that opens the room. Only calls that fit nowhere wait for the next morning.
+- **The plan locks once the day is dispatched.** Until the start time, or until the call
+  sheet is opened (reading it out is how he dispatches), the split is redone from
+  scratch whenever a call is added — so calls entered the night before still get the
+  best split. After that each job keeps its stamped day and truck, and a new call only
+  joins the truck it adds the least to. "Plan the day again from scratch" is the manual
+  reset. After working hours the board plans tomorrow instead.
 - **Hot places early.** The forecast high sets a cutoff time; attic and roof jobs are routed before it.
 - **Honest time blocks.** Symptom sets the base minutes; access, tonnage and crew size stretch it.
 - **Call sheet.** One stop at a time, in route order, in large type, phrased the way you'd say it
@@ -125,5 +139,5 @@ differently there.
 - [x] **03** Storage upgrade — IndexedDB, plus `navigator.storage.persist()`
 - [x] **04** Backup — 7-day nag banner, `navigator.share()` to the iOS share sheet, restore via file picker, screenshottable Week view
 - [x] **05** Job status instead of deletion, paste-a-text intake, one question per screen
-- [ ] **06** Scheduler — as soon as possible, grouped by area each day, new calls placed on the best truck
+- [x] **06** Scheduler — as soon as possible, grouped by area each day, new calls placed on the best truck
 - [ ] **07** After checking the AC — fixed / part / new unit, morning pickups, replacements per day

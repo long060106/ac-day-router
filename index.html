@@ -58,7 +58,7 @@
     <div id="exNote"></div>
     <div class="readout" id="dayReadout"></div>
     <div id="dayPlan"></div>
-    <div class="sec-head"><h2>What the batching saves</h2><span class="note">vs. driving them in the order the phone rang</span></div>
+    <div class="sec-head"><h2>What grouping saves</h2><span class="note">vs. handing each call to the next truck in the order the phone rang</span></div>
     <div class="savings" id="savings"></div>
   </section>
 
@@ -73,7 +73,7 @@
   <section id="v-queue" hidden>
     <div class="sec-head">
       <h2>Waiting to be scheduled</h2>
-      <span class="note">Grouped by route zone. Each zone gets its own day so nobody drives the corridor twice.</span>
+      <span class="note">Every open call, on the truck that takes it. A new call joins the truck it adds the fewest miles to.</span>
     </div>
     <div id="queueList"></div>
   </section>
@@ -83,9 +83,9 @@
     <div class="sec-head"><h2>The three rules this runs on</h2></div>
 
     <div class="card pad" style="margin-bottom:14px">
-      <div class="eyebrow">Rule 1 — Zone days</div>
-      <h3 class="disp" style="font-size:15.5px;margin:5px 0 7px">One zone per day. Emergencies break the rule; nothing else does.</h3>
-      <p style="margin:0 0 12px;color:var(--ink-2);font-size:13.5px">Miami to Boca Raton is 45–50 miles and 50–70 minutes, 90 in traffic. Two round trips up the corridor in one day is 4 wasted hours. Maintenance, quotes, drain clogs and reschedules can all wait two days — so they get batched by zone.</p>
+      <div class="eyebrow">Rule 1 — Nearby calls together</div>
+      <h3 class="disp" style="font-size:15.5px;margin:5px 0 7px">Every call goes out as soon as a truck can take it. Each truck keeps to one part of the county.</h3>
+      <p style="margin:0 0 12px;color:var(--ink-2);font-size:13.5px">Miami to Boca Raton is 45–50 miles and 50–70 minutes, 90 in traffic. A truck that crosses the corridor twice in one day loses 4 hours. So the open calls are split by area, one truck per stretch of the corridor. When there are more calls than the trucks can do, the oldest calls go first and the newest wait for the next morning. Until the day starts, or until the call sheet is opened, the split is redone every time a call is added. After that a new call joins the truck it adds the fewest miles to, and nobody else's list changes. The areas below are just names for those stretches.</p>
       <div class="tscroll"><table id="zoneTable"></table></div>
     </div>
 
