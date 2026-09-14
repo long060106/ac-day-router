@@ -10,6 +10,12 @@ before the heat, and gives him a page he can read out loud on the phone.
 
 ## How it works
 
+- **New call in 30 seconds.** He pastes whatever the customer texted. The app reads the
+  address, city, phone, where the unit is and what's wrong, then asks one question per
+  screen for whatever it could not read — never more than four answers to choose from.
+  Every call is treated as an emergency, because people only call when the AC is broken.
+- **Finished jobs are kept.** "Done" moves a job to a Finished list instead of deleting
+  it; Undo puts it back.
 - **Zone days.** One corridor zone per weekday. Emergencies break the rule; nothing else does.
 - **Hot places early.** The forecast high sets a cutoff time; attic and roof jobs are routed before it.
 - **Honest time blocks.** Symptom sets the base minutes; access, tonnage and crew size stretch it.
@@ -28,7 +34,7 @@ browser; GitHub Pages holds the code and never touches the data.
 | --- | --- |
 | `index.html` | Markup only, plus the links to everything else |
 | `style.css` | All styling |
-| `app.js` | All logic — zones, durations, heat cutoffs, routing, call sheet |
+| `app.js` | All logic — zones, durations, heat cutoffs, routing, reading pasted texts, new-call questions, call sheet |
 | `manifest.json` | Makes it installable to the iPhone home screen |
 | `service-worker.js` | Caches the app so it opens with no signal |
 | `icons/` | Home-screen icons (regenerate with `python make_icons.py`) |
@@ -54,6 +60,12 @@ machinery to run queries nobody needs against a few hundred rows.
 The mirror is deliberate rather than leftover. The data is a few kilobytes and
 it is his entire business, so a second copy that survives one store being
 cleared is worth more than a tidy single-store cutover.
+
+Every job carries a `status` — `open` or `done`. Jobs saved before Stage 05 have no
+status, because back then "Done" deleted them; `hydrate()` reads a missing status as
+`open` on every load, so old records and old backup files need no migration step.
+A half-entered new call is kept separately under `acdayrouter.draft` in localStorage,
+so a second call interrupting the first does not lose it.
 
 Boot order matters and is easy to break: the examples are **not** seeded until
 IndexedDB has been read. Seeding earlier would call `saveLocal()` and overwrite
@@ -112,3 +124,6 @@ differently there.
 - [x] **02** Works with no signal — `service-worker.js`, tested in airplane mode
 - [x] **03** Storage upgrade — IndexedDB, plus `navigator.storage.persist()`
 - [x] **04** Backup — 7-day nag banner, `navigator.share()` to the iOS share sheet, restore via file picker, screenshottable Week view
+- [x] **05** Job status instead of deletion, paste-a-text intake, one question per screen
+- [ ] **06** Scheduler — as soon as possible, grouped by area each day, new calls placed on the best truck
+- [ ] **07** After checking the AC — fixed / part / new unit, morning pickups, replacements per day
