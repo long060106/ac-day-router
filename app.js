@@ -75,12 +75,9 @@ var SIZES=[
 ];
 function size(id){for(var i=0;i<SIZES.length;i++){if(SIZES[i].id===id)return SIZES[i];}return SIZES[0];}
 
-var URGENCY=[
- {id:"em",   label:"Emergency",  sub:"today, breaks zone", tone:"hot"},
- {id:"soon", label:"This week",  sub:"next zone day",      tone:""},
- {id:"flex", label:"Flexible",   sub:"any zone day",       tone:""}
-];
-var CREWS=[{id:1,label:"1 tech",mult:1.00},{id:2,label:"2 techs",mult:0.65}];
+/* Urgency on a job: "em" goes today and breaks the zone; "soon" and "flex"
+   wait for their zone day. New calls are always "em" (see NEW_CALL). The
+   other two live on in older jobs and the examples. */
 
 /* ============================================================
    SETTINGS
@@ -164,15 +161,15 @@ var state={jobs:[],settings:Object.assign({},DEF),tab:"today",hi:94,draft:blankD
            lastBackupAt:0,nagSnoozeUntil:0};
 var LS="acdayrouter.v1";
 
-function blankDraft(){
-  return {name:"",phone:"",addr:"",city:"Fort Lauderdale",symptom:"nocool_dead",
-          access:"yard",size:"s34",urgency:"soon",crew:1,note:""};
-}
 function uid(){return "j"+Date.now().toString(36)+Math.random().toString(36).slice(2,6);}
 
 function hydrate(j){
   var ni = CITY_NI[j.city]; if(ni===undefined) ni=48;
   j.ni=ni; j.zone=zoneOf(ni).id; j.tier=acc(j.access).tier; j.dur=duration(j);
+  /* Before Stage 05, "Done" deleted a job, so every job saved back then was
+     still on the board. No status means open. This runs on every load, so old
+     records and old backup files are carried over without a separate step. */
+  if(!j.status) j.status="open";
   return j;
 }
 /* ---------- IndexedDB ----------
@@ -242,7 +239,7 @@ function idbSave(rec){
 
 /* ---------- saving ---------- */
 function snapshot(){
-  return { v:1, seeded:true, jobs:state.jobs, settings:state.settings,
+  return { v:2, seeded:true, jobs:state.jobs, settings:state.settings,
            hi:state.hi, savedAt:Date.now(),
            lastBackupAt:state.lastBackupAt, nagSnoozeUntil:state.nagSnoozeUntil };
 }
@@ -277,14 +274,13 @@ function loadLocal(){
 }
 function payload(){
   return JSON.stringify({
-    app:"AC Day Router", v:1, exported:new Date().toISOString(),
+    app:"AC Day Router", v:2, exported:new Date().toISOString(),
     jobs:state.jobs.filter(function(j){return !j.example;}),
     settings:state.settings, hi:state.hi
   },null,2);
 }
 /* There is one device and no server, so "persist" just means the phone.
-   Kept as named calls because the call sites read better that way. */
-function persist(j){ saveLocal(); }
+   Kept as a named call because the call sites read better that way. */
 function persistSettings(){ saveLocal(); }
 
 /* ============================================================
@@ -342,7 +338,7 @@ function todaysZone(){
 function fullestZone(){
   var best=null,bn=-1;
   ZONES.forEach(function(z){
-    var n=state.jobs.filter(function(j){return j.zone===z.id&&j.urgency!=="em";}).length;
+    var n=openJobs().filter(function(j){return j.zone===z.id&&j.urgency!=="em";}).length;
     if(n>bn){bn=n;best=z;}
   });
   return best;
@@ -355,8 +351,9 @@ function buildToday(){
   var baseNi=CITY_NI[state.settings.base]!==undefined?CITY_NI[state.settings.base]:48;
   var startMin=(function(s){var p=String(s||"07:00").split(":");return (+p[0])*60+(+p[1]||0);})(state.settings.start);
 
-  var ems=state.jobs.filter(function(j){return j.urgency==="em";});
-  var zoneJobs=state.jobs.filter(function(j){return j.urgency!=="em"&&j.zone===zone.id;});
+  var open=openJobs();
+  var ems=open.filter(function(j){return j.urgency==="em";});
+  var zoneJobs=open.filter(function(j){return j.urgency!=="em"&&j.zone===zone.id;});
   var pool=ems.concat(zoneJobs);
 
   var capMin=Math.round((parseFloat(state.settings.hours)||8.5)*60);
@@ -380,7 +377,7 @@ function buildToday(){
   var piggy={};
   for(var k2=0;k2<nTrucks;k2++){
     Object.keys(truckEmZones[k2]).forEach(function(zid){
-      state.jobs.filter(function(j){return j.urgency!=="em"&&j.zone===zid&&!piggy[j.id];})
+      open.filter(function(j){return j.urgency!=="em"&&j.zone===zid&&!piggy[j.id];})
         .sort(function(a,b){return a.tier-b.tier||a.ni-b.ni;})
         .forEach(function(j){
           if(used[k2]+j.dur<=capMin){buckets[k2].push(j);used[k2]+=j.dur;piggy[j.id]=1;j._piggy=zid;}
@@ -442,6 +439,19 @@ function dropJob(id,msg){
   saveLocal();render();toast(msg);
 }
 function jobById(id){for(var i=0;i<state.jobs.length;i++){if(state.jobs[i].id===id)return state.jobs[i];}return null;}
+/* Everything that plans or counts work looks at open jobs only. Finished jobs
+   stay in state.jobs as his history and go out with every backup. */
+function openJobs(){return state.jobs.filter(function(j){return j.status==="open";});}
+function finishJob(id){
+  var j=jobById(id); if(!j)return;
+  j.status="done"; j.doneAt=Date.now();
+  saveLocal();render();toast("Job finished");
+}
+function reopenJob(id){
+  var j=jobById(id); if(!j)return;
+  j.status="open"; delete j.doneAt;
+  saveLocal();render();toast("Back on the board");
+}
 
 function renderToday(){
   var d=buildToday(), s=state.settings;
@@ -499,6 +509,7 @@ function renderToday(){
           '<div class="sline1"><span class="sname">'+esc(j.name||"No name")+'</span><span class="scity">'+esc(j.city)+'</span></div>'+
           '<div class="sline2"><b>'+esc(sy.label)+'</b> — '+esc(a.label.toLowerCase())+', '+esc(size(j.size).label.toLowerCase())+(j.crew===2?", 2 techs":"")+'</div>'+
           (j.note?'<div class="sline2" style="color:var(--ink-3)">'+esc(j.note)+'</div>':'')+
+          (j.msg?'<details class="smsg"><summary>Their text</summary><p>'+esc(j.msg)+'</p></details>':'')+
           '<div class="stags">'+
             (j.urgency==="em"?'<span class="pill p-em">Emergency</span>':'')+
             (j.urgency==="em"&&j.zone!==d.zone.id?'<span class="pill p-warm">Off-zone — '+esc(zoneById(j.zone).name)+'</span>':'')+
@@ -532,9 +543,9 @@ function renderToday(){
       if(!j)return;
       ask("Mark this job finished?",
           (j.name||"This job")+" in "+j.city+" — "+sym(j.symptom).label.toLowerCase()+
-          ". It comes off the board and the rest of the day re-times around it.",
+          ". It comes off today\u2019s run and moves to the Finished list on the Waiting tab, where Undo can bring it back.",
           "Mark finished","",
-          function(){dropJob(id,"Job finished");});
+          function(){finishJob(id);});
     };
   });
 
@@ -554,7 +565,7 @@ function renderSavings(d){
      zones in the same day. So compare the two POLICIES on the same workload:
      take n jobs in the order the phone rang, wherever they are, and drive
      them in that order (what he does now) vs. today's one-zone plan. */
-  var byCall=state.jobs.slice().sort(function(a,b){return a.created-b.created;}).slice(0,n);
+  var byCall=openJobs().slice().sort(function(a,b){return a.created-b.created;}).slice(0,n);
   var prev=baseNi, nvMi=0, nvMin=0;
   byCall.forEach(function(j){var mi=legMiles(prev,j.ni);nvMi+=mi;nvMin+=legMin(mi);prev=j.ni;});
   var hb=legMiles(prev,baseNi); nvMi+=hb; nvMin+=legMin(hb);
@@ -599,55 +610,438 @@ function bar(lbl,val,mx,color,num){
     '<span class="num">'+num+'</span></div>';
 }
 
-/* ---------- new call ---------- */
-function chipRow(el,items,cur,onPick,keyf,labf,subf,tonef){
-  el.innerHTML=items.map(function(it){
-    var k=keyf(it);
-    return '<button class="chip '+(tonef?tonef(it):"")+'" aria-pressed="'+(String(k)===String(cur))+'" data-k="'+esc(k)+'">'+
-      esc(labf(it))+(subf&&subf(it)?'<span class="sub">'+esc(subf(it))+'</span>':'')+'</button>';
-  }).join("");
-  Array.prototype.forEach.call(el.querySelectorAll(".chip"),function(b){
-    b.onclick=function(){onPick(b.getAttribute("data-k"));};
+/* ============================================================
+   NEW CALL — one question per screen.
+   He is usually standing in someone else's house when the phone rings.
+   So a call goes in by pasting whatever the customer texted, and the app
+   asks only what that text did not already say. Target: 30 seconds.
+   ============================================================ */
+
+/* Every call is an emergency — people only call when the AC is broken — so
+   urgency is not asked. Neither are system size and crew: they only stretch
+   the time block, and a sensible default beats one more question. */
+var NEW_CALL={urgency:"em",size:"s34",crew:1};
+
+/* Four answers per question, mapped onto the existing tables so duration(),
+   the heat tiers and the routing all work unchanged. */
+var UNIT_OPTS=[
+ {id:"attic", label:"Attic",    sub:"hot — goes early"},
+ {id:"roof",  label:"Roof",     sub:"hot — goes early"},
+ {id:"yard",  label:"Backyard", sub:"outside"},
+ {id:"garage",label:"Inside",   sub:"closet or garage"}
+];
+var PROB_OPTS=[
+ {id:"nocool_warm",label:"Not cooling"},
+ {id:"water",      label:"Leaking water"},
+ {id:"noise",      label:"Noise"},
+ {id:"nocool_dead",label:"Won’t turn on"}
+];
+function optLabel(list,id){for(var i=0;i<list.length;i++){if(list[i].id===id)return list[i].label;}return "";}
+
+/* ---------- reading a pasted customer text ----------
+   Plain pattern matching on the phone, no service. It only has to be right
+   often enough to skip questions: every guess is shown on the check screen,
+   and anything it misses simply gets asked. */
+var CITY_ALIASES=[
+ ["ft lauderdale","Fort Lauderdale"],["ftl","Fort Lauderdale"],
+ ["n miami beach","North Miami Beach"],["nmb","North Miami Beach"],["n miami","North Miami"],
+ ["n lauderdale","North Lauderdale"],["miami bch","Miami Beach"],["boca","Boca Raton"],
+ ["delray","Delray Beach"],["boynton","Boynton Beach"],["pompano","Pompano Beach"],
+ ["deerfield","Deerfield Beach"],["hallandale","Hallandale Beach"],["sunny isles","Sunny Isles Beach"],
+ ["dania","Dania Beach"],["west palm","West Palm Beach"],["wpb","West Palm Beach"],
+ ["lake worth beach","Lake Worth"],["pembroke","Pembroke Pines"],["opa locka","Opa-locka"]
+];
+/* Text and city names are flattened the same way — lowercase, punctuation to
+   spaces — so "Hialeah." and "Opa-locka" match. Longest first, so "North Miami
+   Beach" is found before "Miami Beach" before "Miami". */
+function flat(s){return " "+String(s||"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim()+" ";}
+var CITY_KEYS=CITIES.map(function(c){return [flat(c[0]),c[0]];})
+  .concat(CITY_ALIASES.map(function(a){return [flat(a[0]),a[1]];}))
+  .sort(function(a,b){return b[0].length-a[0].length;});
+
+var ST_TYPES="St|Street|Ave|Avenue|Av|Blvd|Boulevard|Rd|Road|Dr|Drive|Ter|Terr|Terrace|Ct|Court|"+
+             "Cir|Circle|Ln|Lane|Pl|Place|Pkwy|Parkway|Hwy|Highway|Way|Trl|Trail";
+/* number · optional direction · up to four words · street type · optional
+   trailing direction · optional apartment with a digit in it */
+var ADDR_RE=new RegExp(
+  "\\b(\\d{2,6}[A-Za-z]?\\s+(?:(?:N|S|E|W|NE|NW|SE|SW)\\.?\\s+)?(?:[A-Za-z0-9'-]+\\s+){0,4}?(?:"+ST_TYPES+")\\b\\.?"+
+  "(?:\\s+(?:N|S|E|W|NE|NW|SE|SW)\\b\\.?)?"+
+  "(?:\\s*,?\\s*(?:Apt|Apartment|Unit|Ste|Suite|#)\\.?\\s*#?\\s*[A-Za-z]?\\d[A-Za-z0-9-]*)?)","i");
+var PHONE_RE=/(?:\+?1[\s.-]*)?\(?([2-9]\d{2})\)?[\s.-]*(\d{3})[\s.-]*(\d{4})(?!\d)/;
+
+/* Order matters: the first rule that matches wins. A dead unit outranks
+   "not cooling", which outranks a leak, which outranks a noise — the more
+   serious reading gets the longer time block. */
+var PROB_RULES=[
+ ["nocool_dead",/won'?t\s+(?:turn|come|kick|power)\s+on|(?:not|isn'?t|doesn'?t|does\s+not)\s+(?:turn|turning|come|coming)\s+on|won'?t\s+start|no\s+power|nothing\s+(?:happens|works|runs|comes\s+on)|completely\s+dead|\bdead\b|breaker|tripp/i],
+ ["nocool_warm",/not\s+cool|no\s+cool|isn'?t\s+cool|not\s+(?:getting\s+)?cold|(?:warm|hot)\s+air|blow(?:s|ing)?\s+(?:warm|hot)|no\s+(?:ac|a\/c|air)\b|(?:ac|a\/c|air)\s+(?:is\s+)?(?:out|broke|broken|not\s+working|stopped)|not\s+working|stopped\s+working|freon|refrigerant/i],
+ ["water",/water|leak|drip|puddle|\bwet\b|ceiling\s+stain|overflow|flood/i],
+ ["noise",/nois|loud|squeal|grind|rattl|bang|buzz|humm|clunk|vibrat|screech/i]
+];
+/* Where the unit is. Attic outranks everything because it decides the time of
+   day; "outside" is weakest because every split system has an outside unit.
+   The third value marks a word strong enough to trust anywhere in the text. */
+var UNIT_RULES=[
+ ["attic",/attic/i,true],
+ ["roof",/\broof/i,true],
+ ["garage",/closet|garage|laundry|utility\s+room|hallway|air\s+handler/i],
+ ["yard",/back\s*yard|side\s+yard|\byard\b|outside|side\s+of\s+the\s+house|patio/i]
+];
+var NOTE_RE=/\b(gate|code|dogs?|pets?|tenant|landlord|condo|apt|apartment|floor|keys?|lock\s?box|buzz(?:er)?|call\s+(?:me\s+)?(?:first|before|when)|text\s+(?:me\s+)?(?:first|before)|park(?:ing)?|after\s+\d|before\s+\d|elderly|baby|infant|pregnant|oxygen)\b/i;
+
+function fmtPhone(d){
+  d=String(d||"").replace(/\D/g,"");
+  if(d.length===11&&d.charAt(0)==="1")d=d.slice(1);
+  return d.length===10 ? d.slice(0,3)+"-"+d.slice(3,6)+"-"+d.slice(6) : "";
+}
+function findCity(t){
+  var low=flat(t);
+  for(var i=0;i<CITY_KEYS.length;i++){
+    if(low.indexOf(CITY_KEYS[i][0])>=0)return CITY_KEYS[i][1];
+  }
+  return "";
+}
+var NOT_NAMES=/^(?:please|so|again|you|ok|okay|in advance|god bless|sir|mam|ma'am)$/i;
+function titleWord(w){return w.charAt(0).toUpperCase()+w.slice(1).toLowerCase();}
+
+function readCall(raw){
+  var t=String(raw||""), out={}, m, rest=t;
+
+  m=t.match(/(?:^|\n)\s*name\s*[:\-]\s*([^\n,]+)/i) ||
+    t.match(/\b(?:this is|my name is|my name's|name is)\s+([A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+)?)/) ||
+    t.match(/\b(?:[Tt]hanks|[Tt]hank you|[Rr]egards)[,!.\s-]+([A-Z][a-z'’-]+(?:\s+[A-Z][a-z'’-]+)?)\s*$/);
+  if(m&&!findCity(m[1])&&!NOT_NAMES.test(m[1].trim()))
+    out.name=m[1].trim().split(/\s+/).map(titleWord).join(" ");
+
+  m=t.match(PHONE_RE);
+  if(m){out.phone=m[1]+"-"+m[2]+"-"+m[3];rest=rest.replace(m[0]," ");}
+
+  var after="";
+  m=rest.match(ADDR_RE);
+  if(m){
+    out.addr=m[1].replace(/\s+/g," ").replace(/[.,]$/,"").trim();
+    after=rest.slice(m.index+m[0].length,m.index+m[0].length+40);
+    rest=rest.replace(m[0]," ");
+  }
+
+  /* The city written right after the street is the one that counts. Only then
+     search the rest — with the street already cut out, or "2100 Hollywood Blvd"
+     and "Hallandale Beach Blvd" would be read as cities. */
+  out.city=findCity(after)||findCity(rest);
+
+  /* "Dog in yard" is a note, not where the unit is. A wrong guess here is worse
+     than asking — it can put attic work in the afternoon — so the weaker words
+     are only read from sentences that are not notes. */
+  var i, plain=rest.split(/[\n.!?;]+/).filter(function(s){return !NOTE_RE.test(s);}).join(". ");
+  for(i=0;i<UNIT_RULES.length;i++){
+    if(UNIT_RULES[i][1].test(UNIT_RULES[i][2]?t:plain)){out.access=UNIT_RULES[i][0];break;}
+  }
+  for(i=0;i<PROB_RULES.length;i++){if(PROB_RULES[i][1].test(t)){out.symptom=PROB_RULES[i][0];break;}}
+
+  var notes=rest.split(/[\n.!?;]+/).map(function(s){return s.trim();})
+    .filter(function(s){return s.length>2&&NOTE_RE.test(s);});
+  if(notes.length){
+    var n=notes.join(". ");
+    out.note=(n.charAt(0).toUpperCase()+n.slice(1)).slice(0,220)+".";
+  }
+  return out;
+}
+
+/* ---------- the draft ---------- */
+var DRAFT_KEY="acdayrouter.draft";
+var IK_STEPS=["paste","addr","city","access","symptom","phone","review"];
+var IK_FIELDS=["addr","city","access","symptom","phone"];
+var IK_NAMES={addr:"address",city:"city",access:"unit",symptom:"problem",phone:"phone"};
+
+function blankDraft(){
+  return {step:"paste",hist:[],back:false,text:"",msg:"",
+          name:"",phone:"",addr:"",city:"",access:"",symptom:"",note:"",read:{},skip:{}};
+}
+/* A half-entered call survives the app being closed, because the moment that
+   happens is a second call interrupting the first. It is a convenience copy,
+   not the store of record, so localStorage on its own is enough. */
+function loadDraft(){
+  try{
+    var d=JSON.parse(localStorage.getItem(DRAFT_KEY)||"null");
+    if(d&&d.step)return Object.assign(blankDraft(),d);
+  }catch(e){}
+  return blankDraft();
+}
+function saveDraft(){try{localStorage.setItem(DRAFT_KEY,JSON.stringify(state.draft));}catch(e){}}
+function clearDraft(){state.draft=blankDraft();try{localStorage.removeItem(DRAFT_KEY);}catch(e){}}
+function draftDirty(){
+  var d=state.draft;
+  return !!(d.text||d.name||d.phone||d.addr||d.city||d.access||d.symptom||d.note);
+}
+
+/* ---------- moving between questions ---------- */
+function ikAnswered(s){
+  var d=state.draft;
+  if(s==="addr"||s==="phone")return !!d[s]||!!d.skip[s];
+  return !!d[s];
+}
+function ikMove(step){
+  var d=state.draft;
+  d.hist.push(d.step);d.step=step;
+  saveDraft();render();
+  window.scrollTo(0,0);
+  var el=document.querySelector("#intake .ik-in");
+  if(el)el.focus();
+}
+/* After an answer: straight back to the check screen if that is where he
+   came from, otherwise on to the next question the text did not answer. */
+function ikNext(){
+  var d=state.draft;
+  if(d.back){d.back=false;d.hist.pop();d.step="review";saveDraft();render();window.scrollTo(0,0);return;}
+  var i=IK_STEPS.indexOf(d.step)+1;
+  while(i<IK_STEPS.length-1&&ikAnswered(IK_STEPS[i]))i++;
+  ikMove(IK_STEPS[i]);
+}
+function ikBack(){
+  var d=state.draft;
+  d.back=false;
+  d.step=d.hist.length?d.hist.pop():"paste";
+  saveDraft();render();window.scrollTo(0,0);
+}
+function ikEdit(step){
+  var d=state.draft;
+  d.skip[step]=false;d.back=true;
+  ikMove(step);
+}
+/* Reading a text starts the call fresh: whatever an earlier paste guessed is
+   dropped, so pasting a second time never mixes two customers together. */
+function ikRead(text){
+  var r=readCall(text), d=blankDraft();
+  d.hist=state.draft.hist;d.step=state.draft.step;
+  d.text=String(text||"");d.msg=d.text.trim();
+  ["name","phone","addr","city","access","symptom","note"].forEach(function(k){
+    if(r[k]){d[k]=r[k];d.read[k]=true;}
   });
+  state.draft=d;
+  ikNext();
+}
+
+/* ---------- drawing ---------- */
+function ikHead(title,sub,showRead){
+  var d=state.draft;
+  var h='<div class="ik-top"><span class="eyebrow">New call</span>'+
+        (draftDirty()?'<button type="button" class="linkish" id="ikReset">Start over</button>':'')+'</div>'+
+        '<h2 class="ik-q">'+title+'</h2>';
+  if(sub)h+='<p class="ik-sub">'+sub+'</p>';
+  if(showRead&&d.msg){
+    var got=IK_FIELDS.filter(function(k){return d.read[k];}).map(function(k){return IK_NAMES[k];});
+    h+='<p class="ik-read">'+(got.length
+      ? 'Read from their text: <b>'+got.join(" · ")+'</b>'
+      : 'Nothing could be read from their text, so a few quick questions.')+'</p>';
+  }
+  return h;
+}
+function ikOpts(list,cur){
+  return '<div class="ik-opts">'+list.map(function(o){
+    return '<button type="button" class="ik-opt" data-pick="'+o.id+'" aria-pressed="'+(o.id===cur)+'">'+
+      '<b>'+esc(o.label)+'</b>'+(o.sub?'<span>'+esc(o.sub)+'</span>':'')+'</button>';
+  }).join("")+'</div>';
+}
+/* Never more than four cities on screen. Before anything is typed, the four
+   his calls come from most; after, the best matches for what he typed. */
+function cityChoices(q){
+  var f=flat(q).trim();
+  if(!f){
+    var ct={};
+    state.jobs.forEach(function(j){if(!j.example&&j.city)ct[j.city]=(ct[j.city]||0)+1;});
+    var top=Object.keys(ct).sort(function(a,b){return ct[b]-ct[a];}).slice(0,4);
+    return top.length?top:[state.settings.base];
+  }
+  var seen={},starts=[],inside=[];
+  CITY_KEYS.forEach(function(k){
+    var key=k[0].trim(),name=k[1];
+    if(seen[name])return;
+    if(key.indexOf(f)===0){starts.push(name);seen[name]=1;}
+    else if((" "+key).indexOf(" "+f)>=0){inside.push(name);seen[name]=1;}
+  });
+  function shortFirst(a,b){return a.length-b.length;}
+  return starts.sort(shortFirst).concat(inside.sort(shortFirst)).slice(0,4);
+}
+function ikReview(d){
+  var ni=CITY_NI[d.city], z=zoneOf(ni===undefined?48:ni), a=acc(d.access);
+  var mins=duration({symptom:d.symptom,access:d.access,size:NEW_CALL.size,crew:NEW_CALL.crew});
+  var cut=cutoffFor(parseInt(state.hi,10)||90);
+  var none='<em>none</em>';
+  function tag(k){return d.read[k]?'<i>from text</i>':'';}
+  function row(k,label,val){
+    return '<div class="ik-rrow"><span class="k">'+label+tag(k)+'</span><span class="v">'+val+'</span>'+
+           '<button type="button" class="act" data-edit="'+k+'">Change</button></div>';
+  }
+  return ikHead("Check it, then save","",false)+
+    '<div class="readout">'+
+      cell("Zone",esc(z.name))+cell("Goes","Today")+cell("Block",fmtDur(mins))+
+      cell("Unit",a.tier===1?"by "+cut.txt:a.tier===2?"any time":"midday ok")+
+    '</div>'+
+    '<div class="ik-rev">'+
+      row("addr","Address",d.addr?esc(d.addr):none)+
+      row("city","City",esc(d.city))+
+      row("access","Unit",esc(optLabel(UNIT_OPTS,d.access)))+
+      row("symptom","Problem",esc(optLabel(PROB_OPTS,d.symptom)))+
+      row("phone","Phone",d.phone?esc(d.phone):none)+
+      '<div class="ik-rrow wide"><label class="k" for="ikName">Name'+tag("name")+'</label>'+
+        '<input id="ikName" class="ik-inline" type="text" autocomplete="off" autocapitalize="words" placeholder="Optional" value="'+esc(d.name)+'"></div>'+
+      '<div class="ik-rrow wide"><label class="k" for="ikNote">Note'+tag("note")+'</label>'+
+        '<textarea id="ikNote" class="ik-inline" placeholder="Gate code, dog, call first">'+esc(d.note)+'</textarea></div>'+
+    '</div>';
 }
 function renderNew(){
-  var dr=state.draft;
-  var sel=$("#f-city");
-  if(!sel.options.length){
-    sel.innerHTML=CITIES.slice().sort(function(a,b){return a[0]<b[0]?-1:1;})
-      .map(function(c){return '<option value="'+esc(c[0])+'">'+esc(c[0])+'</option>';}).join("");
+  var d=state.draft, h;
+  if(d.step==="paste"){
+    h=ikHead("Paste the customer’s text","The address, where the unit is and what’s wrong — whatever they sent.",false)+
+      '<button type="button" class="btn ik-paste" id="ikPaste">Paste their text</button>'+
+      '<textarea id="ikText" class="ik-text" placeholder="…or type it here. The keyboard mic works too.">'+esc(d.text)+'</textarea>';
+  }else if(d.step==="addr"){
+    h=ikHead("What’s the address?","Street and number. Add the city too if you have it.",true)+
+      '<input id="ikAddr" class="ik-in" type="text" autocomplete="off" autocapitalize="words" placeholder="1420 NW 12th Ave" value="'+esc(d.addr)+'">'+
+      '<div class="ik-row"><button type="button" class="linkish" id="ikSkip">Skip — no address yet</button></div>';
+  }else if(d.step==="city"){
+    h=ikHead("Which city?","Needed to put the job on a route.",true)+
+      '<input id="ikCity" class="ik-in" type="text" autocomplete="off" placeholder="Start typing — Hialeah, Boca…">'+
+      '<div class="ik-opts" id="ikCityOpts"></div>';
+  }else if(d.step==="access"){
+    h=ikHead("Where is the unit?","",true)+ikOpts(UNIT_OPTS,d.access);
+  }else if(d.step==="symptom"){
+    h=ikHead("What’s wrong?","",true)+ikOpts(PROB_OPTS,d.symptom);
+  }else if(d.step==="phone"){
+    h=ikHead("Customer’s phone?","So the tech can call ahead.",true)+
+      '<input id="ikPhone" class="ik-in" type="tel" autocomplete="off" placeholder="305-555-0142" value="'+esc(d.phone)+'">'+
+      '<div class="ik-row"><button type="button" class="btn ghost sm" id="ikPhonePaste">Paste a copied number</button>'+
+      '<button type="button" class="linkish" id="ikSkip">Skip</button></div>';
+  }else{
+    h=ikReview(d);
   }
-  sel.value=dr.city;
-  $("#f-name").value=dr.name;$("#f-phone").value=dr.phone;$("#f-addr").value=dr.addr;$("#f-note").value=dr.note;
+  $("#intake").innerHTML=h;
+  ikWire(d.step);
+}
 
-  chipRow($("#c-symptom"),SYMPTOMS,dr.symptom,function(k){dr.symptom=k;renderNew();},
-    function(i){return i.id;},function(i){return i.label;},function(i){return fmtDur(i.min);},null);
-  chipRow($("#c-access"),ACCESS,dr.access,function(k){dr.access=k;renderNew();},
-    function(i){return i.id;},function(i){return i.label;},
-    function(i){return i.tier===1?"early only":i.tier===2?"any time":"midday ok";},
-    function(i){return i.tone;});
-  chipRow($("#c-size"),SIZES,dr.size,function(k){dr.size=k;renderNew();},
-    function(i){return i.id;},function(i){return i.label;},null,null);
-  chipRow($("#c-urgency"),URGENCY,dr.urgency,function(k){dr.urgency=k;renderNew();},
-    function(i){return i.id;},function(i){return i.label;},function(i){return i.sub;},
-    function(i){return i.tone;});
-  chipRow($("#c-crew"),CREWS,dr.crew,function(k){dr.crew=parseInt(k,10);renderNew();},
-    function(i){return i.id;},function(i){return i.label;},null,null);
+/* ---------- answering ---------- */
+function ikPasteByHand(){
+  var ta=$("#ikText");
+  if(ta)ta.focus();
+  toast("Tap and hold in the box, then Paste");
+}
+function ikSubmitAddr(){
+  var el=$("#ikAddr"), v=el.value.trim(), d=state.draft;
+  if(!v){toast("Type the address, or tap Skip");el.focus();return;}
+  /* He may type the city on the end, or the whole line. Read it the same
+     way as a pasted text so the city question can be skipped too. */
+  var r=readCall(v);
+  d.addr=r.addr||v;d.read.addr=false;
+  if(r.city){d.city=r.city;d.read.city=false;}
+  if(r.phone&&!d.phone)d.phone=r.phone;
+  ikNext();
+}
+function ikSubmitPhone(){
+  var el=$("#ikPhone"), v=el.value.trim(), d=state.draft;
+  if(!v){toast("Type the number, or tap Skip");el.focus();return;}
+  d.phone=fmtPhone(v)||v;d.read.phone=false;
+  ikNext();
+}
+function ikCityOpts(){
+  var box=$("#ikCityOpts"), list=cityChoices($("#ikCity").value);
+  box.innerHTML=list.length
+    ? list.map(function(c){return '<button type="button" class="ik-opt" data-city="'+esc(c)+'"><b>'+esc(c)+'</b></button>';}).join("")
+    : '<p class="ik-sub">Not on his list. Type the nearest city instead.</p>';
+  Array.prototype.forEach.call(box.querySelectorAll("[data-city]"),function(b){
+    b.onclick=function(){
+      state.draft.city=b.getAttribute("data-city");state.draft.read.city=false;
+      ikNext();
+    };
+  });
+}
+function ikOnEnter(el,fn){
+  el.onkeydown=function(e){if(e.key==="Enter"){e.preventDefault();fn();}};
+}
+function ikWire(step){
+  var reset=$("#ikReset");
+  if(reset)reset.onclick=function(){
+    ask("Start this call over?","What you have so far for this customer will be thrown away.",
+        "Start over","danger",function(){clearDraft();render();});
+  };
+  var skip=$("#ikSkip");
+  if(skip)skip.onclick=function(){
+    var d=state.draft;
+    d[step]="";d.skip[step]=true;d.read[step]=false;
+    ikNext();
+  };
 
-  var ni=CITY_NI[dr.city], z=zoneOf(ni===undefined?48:ni), a=acc(dr.access);
-  var mins=duration({symptom:dr.symptom,access:dr.access,size:dr.size,crew:dr.crew});
-  var cut=cutoffFor(parseInt(state.hi,10)||90);
-  $("#liveCalc").innerHTML=
-    cell("Zone",z.name)+
-    cell("Route day",dr.urgency==="em"?"Today":z.dayName.slice(0,3))+
-    cell("Block",fmtDur(mins))+
-    cell("Window",a.tier===1?("before "+cut.txt):a.tier===2?"any time":"midday fine");
+  if(step==="paste"){
+    $("#ikText").oninput=function(){state.draft.text=this.value;saveDraft();};
+    $("#ikPaste").onclick=function(){
+      if(!(navigator.clipboard&&navigator.clipboard.readText)){ikPasteByHand();return;}
+      navigator.clipboard.readText().then(function(t){
+        if(!t||!t.trim()){toast("Nothing is copied yet");return;}
+        ikRead(t);
+      }).catch(ikPasteByHand);
+    };
+  }
+  if(step==="addr"){
+    $("#ikAddr").oninput=function(){state.draft.addr=this.value;saveDraft();};
+    ikOnEnter($("#ikAddr"),ikSubmitAddr);
+  }
+  if(step==="city"){
+    $("#ikCity").oninput=ikCityOpts;
+    ikOnEnter($("#ikCity"),function(){
+      var first=document.querySelector("#ikCityOpts [data-city]");
+      if(first)first.click();
+    });
+    ikCityOpts();
+  }
+  if(step==="access"||step==="symptom"){
+    Array.prototype.forEach.call(document.querySelectorAll("#intake [data-pick]"),function(b){
+      b.onclick=function(){
+        state.draft[step]=b.getAttribute("data-pick");state.draft.read[step]=false;
+        ikNext();
+      };
+    });
+  }
+  if(step==="phone"){
+    $("#ikPhone").oninput=function(){state.draft.phone=this.value;saveDraft();};
+    ikOnEnter($("#ikPhone"),ikSubmitPhone);
+    $("#ikPhonePaste").onclick=function(){
+      if(!(navigator.clipboard&&navigator.clipboard.readText)){$("#ikPhone").focus();toast("Tap and hold in the box, then Paste");return;}
+      navigator.clipboard.readText().then(function(t){
+        var m=String(t||"").match(PHONE_RE);
+        if(!m){toast("No phone number in what’s copied");return;}
+        $("#ikPhone").value=m[1]+"-"+m[2]+"-"+m[3];
+        ikSubmitPhone();
+      }).catch(function(){$("#ikPhone").focus();toast("Tap and hold in the box, then Paste");});
+    };
+  }
+  if(step==="review"){
+    Array.prototype.forEach.call(document.querySelectorAll("#intake [data-edit]"),function(b){
+      b.onclick=function(){ikEdit(b.getAttribute("data-edit"));};
+    });
+    $("#ikName").oninput=function(){state.draft.name=this.value;saveDraft();};
+    $("#ikNote").oninput=function(){state.draft.note=this.value;saveDraft();};
+  }
+}
+function ikSave(){
+  var d=state.draft;
+  d.name=$("#ikName").value.trim();
+  d.note=$("#ikNote").value.trim();
+  if(!d.city){ikEdit("city");return;}
+  if(!d.access){ikEdit("access");return;}
+  if(!d.symptom){ikEdit("symptom");return;}
+  var j=hydrate({id:uid(),created:Date.now(),example:false,status:"open",
+    name:d.name,phone:d.phone,addr:d.addr,city:d.city,access:d.access,symptom:d.symptom,
+    note:d.note,msg:d.msg,urgency:NEW_CALL.urgency,size:NEW_CALL.size,crew:NEW_CALL.crew});
+  state.jobs.push(j);
+  clearDraft();
+  saveLocal();
+  go("today");
+  toast("Saved — "+(j.name||j.city)+" is on today’s run");
 }
 
 /* ---------- queue ---------- */
 function renderQueue(){
-  var html="",any=false;
-  var ems=state.jobs.filter(function(j){return j.urgency==="em";});
+  var html="",any=false,open=openJobs();
+  var ems=open.filter(function(j){return j.urgency==="em";});
   if(ems.length){
     any=true;
     html+='<div class="zgroup"><div class="zhead"><span class="zn" style="color:var(--high)">Emergency</span>'+
@@ -655,7 +1049,7 @@ function renderQueue(){
       '<div class="qlist">'+ems.map(qrow).join("")+'</div></div>';
   }
   ZONES.forEach(function(z){
-    var list=state.jobs.filter(function(j){return j.urgency!=="em"&&j.zone===z.id;});
+    var list=open.filter(function(j){return j.urgency!=="em"&&j.zone===z.id;});
     if(!list.length)return;
     any=true;
     var mins=list.reduce(function(a,j){return a+j.dur;},0);
@@ -665,8 +1059,19 @@ function renderQueue(){
       '<span class="zd">'+esc(z.dayName)+'</span></div>'+
       '<div class="qlist">'+list.map(qrow).join("")+'</div></div>';
   });
-  $("#queueList").innerHTML = any ? html :
-    '<div class="card empty"><span class="disp">Empty board</span>Every call that comes in lands here first, then gets pulled into the day its zone comes up.</div>';
+  if(!any)html='<div class="card empty"><span class="disp">Empty board</span>Every call that comes in lands here first, then gets pulled into the day its zone comes up.</div>';
+
+  /* Finishing a job used to delete it. Now it is kept: the history is his
+     customer list, and Undo is the fix for a Done tapped by mistake. */
+  var done=state.jobs.filter(function(j){return j.status==="done";})
+    .sort(function(a,b){return (b.doneAt||0)-(a.doneAt||0);});
+  if(done.length){
+    var older=done.length-15;
+    html+='<div class="sec-head"><h2>Finished</h2><span class="note">Kept on the phone, not deleted. Undo puts a job back on the board.</span></div>'+
+      '<div class="qlist qdone">'+done.slice(0,15).map(drow).join("")+'</div>'+
+      (older>0?'<p class="qmore">'+older+' older finished job'+(older===1?' is':'s are')+' kept too.</p>':'');
+  }
+  $("#queueList").innerHTML=html;
   Array.prototype.forEach.call(document.querySelectorAll("[data-del]"),function(b){
     b.onclick=function(){
       var id=b.getAttribute("data-del"), j=jobById(id);
@@ -677,11 +1082,20 @@ function renderQueue(){
           function(){dropJob(id,"Job removed");});
     };
   });
+  Array.prototype.forEach.call(document.querySelectorAll("[data-undo]"),function(b){
+    b.onclick=function(){reopenJob(b.getAttribute("data-undo"));};
+  });
 }
 function qrow(j){
   return '<div class="qrow"><span class="pill '+tonePill(j.tier)+'">'+(j.tier===1?"AM":j.tier===2?"OUT":"IN")+'</span>'+
     '<span><span class="qn">'+esc(j.name||"No name")+'</span> <span class="qm">'+esc(j.city)+' · '+esc(sym(j.symptom).label)+'</span></span>'+
     '<span class="qr"><span class="qdur">'+fmtDur(j.dur)+'</span><button class="xbtn" data-del="'+j.id+'" title="Remove">&times;</button></span></div>';
+}
+function drow(j){
+  var when=j.doneAt?new Date(j.doneAt).toLocaleDateString(undefined,{month:"short",day:"numeric"}):"";
+  return '<div class="qrow"><span class="pill p-ok">Done</span>'+
+    '<span><span class="qn">'+esc(j.name||"No name")+'</span> <span class="qm">'+esc(j.city)+' · '+esc(sym(j.symptom).label)+'</span></span>'+
+    '<span class="qr"><span class="qdur">'+esc(when)+'</span><button class="act" data-undo="'+j.id+'">Undo</button></span></div>';
 }
 
 /* ---------- rules tab ---------- */
@@ -757,7 +1171,7 @@ function renderRules(){
   $("#wipe").onclick=function(){
     var n=state.jobs.length;
     ask("Delete everything?",
-        "All "+n+" job"+(n===1?"":"s")+" will be permanently deleted. Settings stay. Save a backup first if you are not sure — this cannot be undone.",
+        "All "+n+" job"+(n===1?"":"s")+", finished ones included, will be permanently deleted. Settings stay. Save a backup first if you are not sure — this cannot be undone.",
         "Delete all "+n,"danger",
         function(){
           state.jobs=[];saveLocal();render();toast("Board cleared");
@@ -809,14 +1223,21 @@ function showBackupText(txt,n){
 function renderBar(){
   var b=$("#stickybar");
   if(state.tab==="new"){
-    b.innerHTML='<button class="btn ghost" id="barCancel">Clear</button><button class="btn" id="barSave">Add to the board</button>';
-    $("#barCancel").onclick=function(){
-      var d0=state.draft, dirty=$("#f-name").value||$("#f-phone").value||$("#f-addr").value||$("#f-note").value;
-      if(!dirty){state.draft=blankDraft();renderNew();return;}
-      ask("Clear this call?","What you have typed for this customer will be thrown away.","Clear","danger",
-          function(){state.draft=blankDraft();renderNew();toast("Cleared");});
-    };
-    $("#barSave").onclick=addJob;
+    var st=state.draft.step;
+    if(st==="paste"){
+      b.innerHTML='<button class="btn ghost" id="barAsk">No text — ask me</button><button class="btn" id="barNext">Next</button>';
+      $("#barAsk").onclick=function(){ikRead("");};
+      $("#barNext").onclick=function(){ikRead($("#ikText").value);};
+    }else if(st==="review"){
+      b.innerHTML='<button class="btn ghost" id="barBack">Back</button><button class="btn" id="barSave">Save</button>';
+      $("#barSave").onclick=ikSave;
+    }else if(st==="addr"||st==="phone"){
+      b.innerHTML='<button class="btn ghost" id="barBack">Back</button><button class="btn" id="barNext">Next</button>';
+      $("#barNext").onclick=st==="addr"?ikSubmitAddr:ikSubmitPhone;
+    }else{
+      b.innerHTML='<button class="btn ghost wide" id="barBack">Back</button>';
+    }
+    var bb=$("#barBack"); if(bb)bb.onclick=ikBack;
   }else if(state.tab==="today"){
     b.innerHTML='<button class="btn ghost" id="barSheet">Call sheet</button><button class="btn" id="barNew">New call</button>';
     $("#barNew").onclick=function(){go("new");};
@@ -825,17 +1246,6 @@ function renderBar(){
     b.innerHTML='<button class="btn wide" id="barNew2">New call</button>';
     $("#barNew2").onclick=function(){go("new");};
   }
-}
-function addJob(){
-  var dr=state.draft;
-  dr.name=$("#f-name").value.trim();dr.phone=$("#f-phone").value.trim();
-  dr.addr=$("#f-addr").value.trim();dr.note=$("#f-note").value.trim();dr.city=$("#f-city").value;
-  if(!dr.name&&!dr.addr){$("#f-name").focus();$("#f-name").style.borderColor="var(--high)";return;}
-  var j=hydrate(Object.assign({},dr,{id:uid(),created:Date.now(),example:false}));
-  state.jobs.push(j);persist(j);
-  state.draft=blankDraft();
-  go("today");
-  toast("Saved \u2014 "+(j.name||"job")+" added to "+zoneOf(j.ni).name);
 }
 /* ============================================================
    CALL SHEET — one stop at a time, big type, in route order.
@@ -1102,7 +1512,7 @@ function weekJobRow(j){
     '</div>';
 }
 function renderWeek(){
-  var dt=new Date(), n=state.jobs.length;
+  var dt=new Date(), open=openJobs(), n=open.length;
   $("#weekWhere").innerHTML="Whole board &middot; "+n+" job"+(n===1?"":"s")+
     " &middot; "+(dt.getMonth()+1)+"/"+dt.getDate()+"/"+dt.getFullYear();
 
@@ -1115,14 +1525,14 @@ function renderWeek(){
     return;
   }
 
-  var ems=state.jobs.filter(function(j){return j.urgency==="em";});
+  var ems=open.filter(function(j){return j.urgency==="em";});
   if(ems.length){
     h+='<div class="wk-group"><div class="wk-head hot">Emergencies &middot; '+ems.length+'</div>';
     ems.forEach(function(j){h+=weekJobRow(j);});
     h+='</div>';
   }
   ZONES.forEach(function(z){
-    var list=state.jobs.filter(function(j){return j.urgency!=="em"&&j.zone===z.id;});
+    var list=open.filter(function(j){return j.urgency!=="em"&&j.zone===z.id;});
     if(!list.length)return;
     list.sort(function(a,b){return a.tier-b.tier||a.ni-b.ni;});
     h+='<div class="wk-group"><div class="wk-head">'+esc(z.name)+' &middot; '+
@@ -1159,7 +1569,7 @@ function render(){
   var cut=cutoffFor(parseInt(state.hi,10)||90);
   $("#cutoffTxt").textContent=cut.txt;
   $("#hi").value=state.hi;
-  $("#qct").textContent=state.jobs.length;
+  $("#qct").textContent=openJobs().length;
   if(state.tab==="today")renderToday();
   if(state.tab==="new")renderNew();
   if(state.tab==="queue")renderQueue();
@@ -1182,12 +1592,13 @@ $("#hi").addEventListener("input",function(){
   if(!isNaN(v)&&v>40&&v<120){state.hi=v;persistSettings();
     $("#cutoffTxt").textContent=cutoffFor(v).txt;
     if(state.tab==="today")renderToday();
-    if(state.tab==="new")renderNew();}
+    if(state.tab==="new"&&state.draft.step==="review")renderNew();}
 });
 
 /* Paint immediately from the localStorage mirror — it is synchronous, so
    there is no blank frame — then let IndexedDB have the last word. */
 var hadLocal=loadLocal();
+state.draft=loadDraft();
 render();
 
 /* Seeding the examples is deliberately NOT done here. If localStorage had

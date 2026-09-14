@@ -63,56 +63,10 @@
   </section>
 
   <!-- ================= NEW CALL ================= -->
+  <!-- One question per screen, drawn by app.js. It starts from whatever the
+       customer texted and asks only what that text did not already say. -->
   <section id="v-new" hidden>
-    <div class="sec-head">
-      <h2>New call</h2>
-      <span class="note">Tap through it while they're still on the phone — 6 taps, two typed fields.</span>
-    </div>
-    <div class="readout" id="liveCalc"></div>
-    <div class="grid2">
-      <div>
-        <div class="field">
-          <label for="f-name">Customer <span class="hint">and phone</span></label>
-          <input id="f-name" type="text" placeholder="Name" autocomplete="off">
-          <div style="height:8px"></div>
-          <input id="f-phone" type="tel" placeholder="Phone" autocomplete="off">
-        </div>
-        <div class="field">
-          <label for="f-addr">Address <span class="hint">street only — city below</span></label>
-          <input id="f-addr" type="text" placeholder="1420 NW 12th Ave" autocomplete="off">
-        </div>
-        <div class="field">
-          <label for="f-city">City</label>
-          <select id="f-city"></select>
-        </div>
-        <div class="field">
-          <label>What they said is wrong</label>
-          <div class="chips" id="c-symptom"></div>
-        </div>
-      </div>
-      <div>
-        <div class="field">
-          <label>Where the unit is <span class="hint">decides the time of day</span></label>
-          <div class="chips" id="c-access"></div>
-        </div>
-        <div class="field">
-          <label>System</label>
-          <div class="chips" id="c-size"></div>
-        </div>
-        <div class="field">
-          <label>How soon</label>
-          <div class="chips" id="c-urgency"></div>
-        </div>
-        <div class="field">
-          <label>Crew</label>
-          <div class="chips" id="c-crew"></div>
-        </div>
-        <div class="field">
-          <label for="f-note">Note <span class="hint">gate code, dog, tenant, unit #</span></label>
-          <textarea id="f-note" placeholder="Gate code 4412. Dog in yard. Call before."></textarea>
-        </div>
-      </div>
-    </div>
+    <div class="intake" id="intake"></div>
   </section>
 
   <!-- ================= QUEUE ================= -->
