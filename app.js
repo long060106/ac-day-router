@@ -83,7 +83,8 @@ function size(id){for(var i=0;i<SIZES.length;i++){if(SIZES[i].id===id)return SIZ
 /* ============================================================
    SETTINGS
    ============================================================ */
-var DEF={ base:"Fort Lauderdale", start:"07:00", hours:8.5, trucks:3, mpg:15, gas:3.35, rate:165 };
+var DEF={ base:"Fort Lauderdale", start:"07:00", hours:8.5, trucks:3, mpg:15, gas:3.35, rate:165,
+          opens:"07:00", swapOut:3, swapIn:3, load:2, dists:[] };
 var SET_FIELDS=[
  {k:"base",   label:"Shop / home base", note:"where the vans start and end", type:"city"},
  {k:"start",  label:"First stop",       note:"clock-in at the first job",    type:"time"},
@@ -91,7 +92,11 @@ var SET_FIELDS=[
  {k:"trucks", label:"Trucks on the road",note:"vans out, not total techs",   type:"num"},
  {k:"mpg",    label:"Van MPG",          note:"loaded, city driving",         type:"num"},
  {k:"gas",    label:"Gas $/gal",        note:"",                             type:"num"},
- {k:"rate",   label:"$ per service call",note:"average ticket",              type:"num"}
+ {k:"rate",   label:"$ per service call",note:"average ticket",              type:"num"},
+ {k:"opens",  label:"Distributors open", note:"earliest a new AC can be picked up", type:"time"},
+ {k:"swapOut",label:"Replace outside unit",note:"hours, 2 techs",           type:"num"},
+ {k:"swapIn", label:"Replace inside unit", note:"hours, 2 techs",           type:"num"},
+ {k:"load",   label:"ACs per truckload", note:"before another pickup",       type:"num"}
 ];
 
 /* ============================================================
@@ -120,7 +125,61 @@ function fmtMin(t){
 }
 function fmtDur(m){ var h=Math.floor(m/60),r=m%60; return h?(h+"h"+(r?" "+r+"m":"")):(r+"m"); }
 
-/* Route a list of jobs: heat tier first, then sweep the corridor. */
+/* ---------- return visits ----------
+   After checking the AC he may need to come back, with a part or with a new
+   unit. Each return trip is a job of its own (kind "part" or "replace"), made
+   by the Finish visit questions. Nothing waits on equipment: South Florida has
+   distributors everywhere, so a new AC is picked up and installed right away. */
+var UNIT_SAY={out:"outside unit",in:"inside unit",both:"both units"};
+function jobLabel(j){
+  if(j.kind==="replace")return "Replace "+UNIT_SAY[j.unit];
+  if(j.kind==="part")return "Put in the part"+(j.from==="hd"?" (Home Depot)":" (distributor)");
+  return sym(j.symptom).label;
+}
+function unitsOf(j){return j.kind!=="replace"?0:j.unit==="both"?2:1;}
+function needsPickup(j){return j.kind==="replace"||(j.kind==="part"&&j.from==="dist");}
+/* The outside unit sits outside, so only a roof makes it hot work. The inside
+   unit is wherever the call said the unit was, attic included. */
+function jobTier(j){
+  if(j.kind!=="replace")return acc(j.access).tier;
+  var outT=j.access==="roof"?1:2, inT=acc(j.access).tier;
+  return j.unit==="out"?outT:j.unit==="in"?inT:Math.min(outT,inT);
+}
+function jobDuration(j){
+  var s=state.settings, o=parseFloat(s.swapOut)||3, n=parseFloat(s.swapIn)||3;
+  if(j.kind==="replace"){
+    var h=j.unit==="out"?o:j.unit==="in"?n:o+n;
+    return Math.max(30,Math.round(h*60/15)*15);
+  }
+  /* Putting a part in: an hour, stretched by a hard-to-reach unit. A Home
+     Depot part adds half an hour for the run to the store. */
+  if(j.kind==="part")return Math.max(30,Math.round((60*acc(j.access).mult+(j.from==="hd"?30:0))/15)*15);
+  return duration(j);
+}
+/* A replacement in the heat: it has to be FINISHED before the cutoff. */
+function hotSwap(j){return j.kind==="replace"&&j.tier===1;}
+
+/* Where new equipment comes from. Until his distributors are added in setup,
+   pickups are planned at the shop, and the app says so. */
+var LOAD_MIN=20;
+function distributors(baseNi){
+  var ds=(state.settings.dists||[]).filter(function(d){return CITY_NI[d.city]!==undefined;})
+    .map(function(d){return {name:d.name||"Distributor",city:d.city,ni:CITY_NI[d.city]};});
+  return ds.length?ds:[{name:"Supply house",city:state.settings.base,ni:baseNi,placeholder:true}];
+}
+function opensMin(){var p=String(state.settings.opens||"07:00").split(":");return (+p[0])*60+(+p[1]||0);}
+function pickupWhat(p){
+  var bits=[];
+  if(p.units)bits.push(p.units+" new AC"+(p.units>1?"s":""));
+  if(p.parts)bits.push(p.parts+" part"+(p.parts>1?"s":""));
+  return bits.join(" + ");
+}
+
+/* Route a list of jobs: heat tier first, then sweep the corridor.
+   A hot replacement goes ahead of every other hot job, because it has to be
+   finished before the cutoff, not just started. Before the first job that
+   needs equipment, the truck stops at whichever distributor adds the least
+   driving, never before it opens, and loads as much as it can carry. */
 function routeJobs(list,baseNi,startMin,cut){
   var arr=list.slice();
   // sweep direction: go toward the far end of the cluster, then work back
@@ -129,20 +188,41 @@ function routeJobs(list,baseNi,startMin,cut){
   var up = far>=baseNi;
   arr.sort(function(a,b){
     if(a.tier!==b.tier) return a.tier-b.tier;      // hot places before the day cooks
+    if(hotSwap(a)!==hotSwap(b)) return hotSwap(a)?-1:1;   // a hot replacement before any other hot job
     return up ? a.ni-b.ni : b.ni-a.ni;             // then sweep the corridor one way
   });
-  var t=startMin, prev=baseNi, out=[], miles=0;
+  var t=startMin, prev=baseNi, out=[], pickups=[], miles=0, covered={}, dists=null;
+  var load=Math.max(1,parseInt(state.settings.load,10)||2);
   for(var i=0;i<arr.length;i++){
-    var j=arr[i], mi=legMiles(prev,j.ni), dm=legMin(mi);
+    var j=arr[i];
+    if(needsPickup(j)&&!covered[j.id]){
+      /* One stop covers every part still to collect and as many units as fit. */
+      var ids=[], units=0, parts=0;
+      for(var x=i;x<arr.length;x++){
+        var y=arr[x];
+        if(!needsPickup(y)||covered[y.id])continue;
+        if(unitsOf(y)&&units&&units+unitsOf(y)>load)continue;
+        covered[y.id]=1; ids.push(y.id); units+=unitsOf(y); if(y.kind==="part")parts++;
+      }
+      dists=dists||distributors(baseNi);
+      var d=dists.reduce(function(b,c){
+        return legMiles(prev,c.ni)+legMiles(c.ni,j.ni) < legMiles(prev,b.ni)+legMiles(b.ni,j.ni) ? c : b;
+      });
+      var pm=legMiles(prev,d.ni), pdm=legMin(pm);
+      miles+=pm; t=Math.max(t+pdm,opensMin());
+      pickups.push({before:out.length,dist:d,arrive:t,driveMi:pm,driveMin:pdm,units:units,parts:parts,jobs:ids});
+      t+=LOAD_MIN; prev=d.ni;
+    }
+    var mi=legMiles(prev,j.ni), dm=legMin(mi);
     miles+=mi; t+=dm;
-    var late = j.tier===1 && t>cut.min;
+    var late = hotSwap(j) ? t+j.dur>cut.min : j.tier===1 && t>cut.min;
     out.push({job:j,arrive:t,driveMi:mi,driveMin:dm,late:late});
     t+=j.dur; prev=j.ni;
   }
   var home=legMiles(prev,baseNi); miles+=home;
-  return {stops:out, miles:Math.round(miles), endMin:t+legMin(home), homeMi:Math.round(home)};
+  return {stops:out, pickups:pickups, miles:Math.round(miles), endMin:t+legMin(home), homeMi:Math.round(home)};
 }
-function routedMins(r){var m=0;r.stops.forEach(function(s){m+=s.driveMin;});return m+legMin(r.homeMi);}
+function routedMins(r){var m=0;r.stops.forEach(function(s){m+=s.driveMin;});r.pickups.forEach(function(p){m+=p.driveMin;});return m+legMin(r.homeMi);}
 
 /* ============================================================
    STATE + STORAGE — localStorage on this one phone, and nowhere else.
@@ -156,7 +236,7 @@ function uid(){return "j"+Date.now().toString(36)+Math.random().toString(36).sli
 
 function hydrate(j){
   var ni = CITY_NI[j.city]; if(ni===undefined) ni=48;
-  j.ni=ni; j.zone=zoneOf(ni).id; j.tier=acc(j.access).tier; j.dur=duration(j);
+  j.ni=ni; j.zone=zoneOf(ni).id; j.tier=jobTier(j); j.dur=jobDuration(j);
   /* Before Stage 05, "Done" deleted a job, so every job saved back then was
      still on the board. No status means open. This runs on every load, so old
      records and old backup files are carried over without a separate step. */
@@ -250,8 +330,9 @@ function saveLocal(){
 }
 function adoptRecord(d){
   state.seeded=!!d.seeded;
-  state.jobs = d.jobs ? d.jobs.map(hydrate) : [];   // an empty board is a REAL state
+  /* Settings first: a replacement's length is read from them. */
   if(d.settings){state.settings=Object.assign({},DEF,d.settings);}
+  state.jobs = d.jobs ? d.jobs.map(hydrate) : [];   // an empty board is a REAL state
   if(d.hi){state.hi=d.hi;}
   state.savedAt=d.savedAt||0;
   state.lastBackupAt=d.lastBackupAt||0;
@@ -285,7 +366,7 @@ function examples(){
   /* Calls do not arrive sorted by zone — they arrive scrambled, which is
      exactly why the batching is worth anything. Fixed scramble so the
      "phone order" comparison reflects a real morning. */
-  var PERM=[11,3,17,8,0,14,5,12,1,16,7,2,15,9,4,13,6,10];
+  var PERM=[11,3,17,8,0,14,5,12,1,16,7,2,15,9,4,13,6,10,18,19];
   var list=[
     /* emergencies — break zone, go today wherever they are */
     mk({name:"Reyes",      phone:"3055550142",addr:"820 NW 22nd Ave",    city:"Miami",          symptom:"nocool_dead",access:"roof",  size:"s34",urgency:"em",  crew:1,note:"Duplex, upstairs tenant. Roof ladder in back."}),
@@ -309,7 +390,10 @@ function examples(){
     mk({name:"Castellano", phone:"9545550188",addr:"3110 NE 14th St",    city:"Pompano Beach",  symptom:"water",      access:"garage",size:"s25",urgency:"soon",crew:1,note:"Ceiling stain in the hallway."}),
     mk({name:"Baptiste",   phone:"9545550176",addr:"1477 NW 40th Ter",   city:"Coral Springs",  symptom:"nocool_warm",access:"attic", size:"s34",urgency:"soon",crew:1,note:"Gate 4412. Dog in yard — call first."}),
     mk({name:"Whitcomb",   phone:"5615550110",addr:"245 SW 4th Ct",      city:"Boca Raton",     symptom:"comp",       access:"yard",  size:"s5", urgency:"soon",crew:2,note:"Out of warranty. Approved the quote Friday."}),
-    mk({name:"Lindqvist",  phone:"5615550153",addr:"901 SE 10th St",     city:"Deerfield Beach",symptom:"smell",      access:"garage",size:"s34",urgency:"flex",crew:1,note:"Musty smell when it kicks on."})
+    mk({name:"Lindqvist",  phone:"5615550153",addr:"901 SE 10th St",     city:"Deerfield Beach",symptom:"smell",      access:"garage",size:"s34",urgency:"flex",crew:1,note:"Musty smell when it kicks on."}),
+    /* return trips, as the Finish visit questions make them */
+    mk({name:"Morales",    phone:"3055550166",addr:"6250 NW 170th St",   city:"Miami Lakes",    symptom:"nocool_warm",access:"attic", size:"s34",urgency:"em",crew:2,kind:"replace",unit:"in",note:"Air handler rusted through. New one approved."}),
+    mk({name:"Okafor",     phone:"9545550122",addr:"7800 NW 88th Ave",   city:"Tamarac",        symptom:"noise",      access:"yard",  size:"s34",urgency:"em",crew:1,kind:"part",from:"dist",note:"Condenser fan motor."})
   ];
   list.forEach(function(j,i){ j.created = t + PERM[i]*22*60000; });
   return list;
@@ -371,8 +455,16 @@ function planDay(ps){
 function routeCost(list,ps){
   if(!list.length)return {ok:true,cost:0};
   var r=routeJobs(list,ps.baseNi,ps.startMin,ps.cut), wait=0, late=0;
-  r.stops.forEach(function(st){wait+=st.arrive-ps.startMin;if(st.late)late++;});
-  return {ok:list.length===1||r.endMin-ps.startMin<=ps.capMin,
+  var badSwap=false;
+  r.stops.forEach(function(st,k){
+    wait+=st.arrive-ps.startMin; if(st.late)late++;
+    /* A replacement that cannot be finished before the heat is not sent up
+       there, unless it is already the truck's first job and nothing could
+       make it earlier. One attic replacement per truck per morning follows
+       from this on its own. */
+    if(k>0&&st.late&&hotSwap(st.job))badSwap=true;
+  });
+  return {ok:!badSwap&&(list.length===1||r.endMin-ps.startMin<=ps.capMin),
           cost:r.miles+WAIT_MI_PER_HOUR*wait/60+LATE_HOT_MI*late};
 }
 
@@ -509,7 +601,11 @@ function whereItGoes(job){
     if(!d.routes[i])continue;
     var stops=d.routes[i].stops;
     for(var k=0;k<stops.length;k++){
-      if(stops[k].job===job)return {truck:i+1,arrive:stops[k].arrive,tomorrow:d.day.tomorrow};
+      if(stops[k].job===job){
+        var pk=null;
+        d.routes[i].pickups.forEach(function(p){if(p.jobs.indexOf(job.id)>=0)pk=p;});
+        return {truck:i+1,arrive:stops[k].arrive,late:stops[k].late,pickup:pk,tomorrow:d.day.tomorrow};
+      }
     }
   }
   return {truck:0,tomorrow:d.day.tomorrow};
@@ -548,14 +644,109 @@ function jobById(id){for(var i=0;i<state.jobs.length;i++){if(state.jobs[i].id===
 function openJobs(){return state.jobs.filter(function(j){return j.status==="open";});}
 function finishJob(id){
   var j=jobById(id); if(!j)return;
-  j.status="done"; j.doneAt=Date.now();
+  j.status="done"; j.doneAt=Date.now(); j.outcome="fixed";
   saveLocal();render();toast("Job finished");
 }
+/* Undo puts a finished visit back on the board. If that visit booked a return
+   trip that has not happened yet, the return trip goes with it, so the same
+   customer is never on the board twice. */
 function reopenJob(id){
   var j=jobById(id); if(!j)return;
-  j.status="open"; delete j.doneAt;
+  var f=j.followUp&&jobById(j.followUp);
+  if(f&&f.status==="open")state.jobs=state.jobs.filter(function(x){return x!==f;});
+  j.status="open"; delete j.doneAt; delete j.outcome; delete j.followUp;
   saveLocal();render();toast("Back on the board");
 }
+
+/* ============================================================
+   FINISH VISIT — asked at the customer's house, one question per
+   screen. Fixed is one tap. Not fixed books the return trip and
+   says plainly what happens next.
+   ============================================================ */
+var fin=null;
+function openFinish(id){
+  if(!jobById(id))return;
+  fin={id:id,step:"fixed"};
+  $("#fin").hidden=false;
+  renderFin();
+}
+function closeFinish(){$("#fin").hidden=true;fin=null;}
+function finOpts(list){
+  return '<div class="ik-opts">'+list.map(function(o){
+    return '<button type="button" class="ik-opt" data-fin="'+o[0]+'"><b>'+esc(o[1])+'</b></button>';
+  }).join("")+'</div>';
+}
+function renderFin(){
+  var j=jobById(fin.id), h='<div class="eyebrow">Finish visit &middot; '+esc(j.name||j.city)+'</div>';
+  if(fin.step==="fixed"){
+    h+='<h3 class="fin-q">'+(j.kind?"All done?":"Fixed?")+'</h3>'+
+       finOpts([["yes",j.kind?"Yes, done":"Yes, fixed"],["no","No, coming back"]]);
+  }else if(fin.step==="need"){
+    h+='<h3 class="fin-q">What do you need?</h3>'+finOpts([["part","A part"],["replace","A new AC"]]);
+  }else if(fin.step==="part"){
+    h+='<h3 class="fin-q">Where from?</h3>'+finOpts([["hd","Home Depot"],["dist","Distributor"]]);
+  }else if(fin.step==="unit"){
+    h+='<h3 class="fin-q">Which unit?</h3>'+finOpts([["out","Outside unit"],["in","Inside unit"],["both","Both"]]);
+  }else{
+    h+='<h3 class="fin-q">'+esc(fin.title)+'</h3><p class="fin-next">'+fin.next+'</p>'+
+       '<button type="button" class="btn wide" id="finOk">OK</button>';
+  }
+  if(fin.step!=="done")h+='<div class="fin-foot"><button type="button" class="linkish" id="finCancel">Cancel</button></div>';
+  $("#finBody").innerHTML=h;
+  Array.prototype.forEach.call(document.querySelectorAll("#finBody [data-fin]"),function(b){
+    b.onclick=function(){finPick(b.getAttribute("data-fin"));};
+  });
+  var c=$("#finCancel"); if(c)c.onclick=closeFinish;
+  var ok=$("#finOk"); if(ok)ok.onclick=closeFinish;
+}
+function finPick(v){
+  var j=jobById(fin.id);
+  if(fin.step==="fixed"){
+    if(v==="yes"){closeFinish();finishJob(j.id);return;}
+    fin.step="need";
+  }else if(fin.step==="need"){
+    fin.step=v==="part"?"part":"unit";
+  }else if(fin.step==="part"){
+    bookReturn(j,{kind:"part",from:v});return;
+  }else if(fin.step==="unit"){
+    bookReturn(j,{kind:"replace",unit:v});return;
+  }
+  renderFin();
+}
+/* The return trip keeps the first call's time, so a customer who has already
+   waited is never pushed behind newer calls. */
+function bookReturn(j,what){
+  var f=hydrate(Object.assign({id:uid(),created:j.created||Date.now(),status:"open",example:!!j.example,
+    parentId:j.id,name:j.name,phone:j.phone,addr:j.addr,city:j.city,access:j.access,size:j.size,
+    symptom:j.symptom,note:j.note,urgency:"em",crew:what.kind==="replace"?2:1},what));
+  j.status="done"; j.doneAt=Date.now(); j.outcome=what.kind; j.followUp=f.id;
+  state.jobs.push(f);
+  saveLocal(); render();
+
+  var w=whereItGoes(f), p=w.pickup;
+  var slot=w.truck ? "Truck "+w.truck+(w.tomorrow?" tomorrow":"")+", about "+fmtMin(w.arrive) : "";
+  if(what.kind==="part"&&what.from==="hd"){
+    fin.title="Get the part at Home Depot";
+    fin.next=slot ? "Back on <b>"+slot+"</b>." : "Every truck is full, so it is <b>first thing next morning</b>. Tell the customer now.";
+  }else{
+    fin.title=what.kind==="part"?"Pick up the part":"New "+UNIT_SAY[what.unit];
+    if(slot){
+      fin.next="Pick up "+(what.kind==="part"?"the part":"the unit")+
+        (p?" at <b>"+esc(p.dist.name)+", "+esc(p.dist.city)+"</b>, "+fmtMin(p.arrive):"")+
+        ". Install on <b>"+slot+"</b>.";
+      if(w.late&&hotSwap(f))fin.next+=" It runs past the "+planSettings().cut.txt+" cutoff — add a tech, or keep the attic time short.";
+      if(p&&p.dist.placeholder)fin.next+='<span class="fin-hint">Add his distributors in Rules &amp; setup so pickups are planned at the right place.</span>';
+    }else{
+      fin.next=hotSwap(f)
+        ? "No truck can finish it before the heat, so it is <b>first thing next morning</b>, straight from the distributor. Tell the customer now."
+        : "Every truck is full, so it is <b>first thing next morning</b>. Tell the customer now.";
+    }
+  }
+  fin.step="done";
+  renderFin();
+}
+$("#fin").onclick=function(e){if(e.target===$("#fin"))closeFinish();};
+document.addEventListener("keydown",function(e){if(e.key==="Escape"&&!$("#fin").hidden)closeFinish();});
 
 function renderToday(){
   var d=buildToday();
@@ -598,6 +789,20 @@ function renderToday(){
   if(!totalJobs&&!d.spill.length){
     html='<div class="card empty"><span class="disp">No open calls</span>Add a call and it goes straight onto a truck.</div>';
   }
+  /* The pickups, all in one place: the first thing the techs need to hear. */
+  var pk=[];
+  d.routes.forEach(function(r,i){if(r)r.pickups.forEach(function(p){pk.push({truck:i+1,p:p});});});
+  if(pk.length){
+    var units=pk.reduce(function(a,x){return a+x.p.units;},0);
+    html+='<div class="card pad pickups"><div class="eyebrow">Pickups '+(d.day.tomorrow?"tomorrow":"today")+
+      (units?' &middot; '+units+' new AC'+(units>1?'s':''):'')+'</div>'+
+      pk.map(function(x){
+        return '<div class="pk-row"><span class="t mono">'+fmtMin(x.p.arrive)+'</span>'+
+          '<span><b>Truck '+x.truck+'</b> &middot; '+esc(pickupWhat(x.p))+'<br><small>'+esc(x.p.dist.name)+', '+esc(x.p.dist.city)+'</small></span></div>';
+      }).join("")+
+      (pk.some(function(x){return x.p.dist.placeholder;})?'<p class="pk-hint">Planned at the shop for now. Add his distributors in Rules &amp; setup.</p>':'')+
+      '</div>';
+  }
   d.routes.forEach(function(r,i){
     if(!r)return;
     var area=areaName(r.stops.map(function(st){return st.job;}));
@@ -605,18 +810,24 @@ function renderToday(){
       '<span class="pill p-in">'+esc(area)+'</span>'+
       '<span class="meta">'+r.stops.length+' stop'+(r.stops.length>1?"s":"")+' · '+r.miles+' mi · back '+fmtMin(r.endMin)+'</span></div><div class="stops">';
     r.stops.forEach(function(st,k){
-      var j=st.job, a=acc(j.access), sy=sym(j.symptom);
-      html+='<div class="drive">'+(k===0?"from base":"")+' '+Math.round(st.driveMi)+' mi · '+st.driveMin+' min</div>';
+      var j=st.job, a=acc(j.access), sy=sym(j.symptom), fromPickup=false;
+      r.pickups.forEach(function(p){
+        if(p.before!==k)return;
+        fromPickup=true;
+        html+='<div class="drive">'+(k===0?"from base":"")+' '+Math.round(p.driveMi)+' mi · '+p.driveMin+' min</div>'+
+          '<div class="pickup"><span class="t mono">'+fmtMin(p.arrive)+'</span><span><b>Pick up '+esc(pickupWhat(p))+'</b> at '+esc(p.dist.name)+', '+esc(p.dist.city)+'</span></div>';
+      });
+      html+='<div class="drive">'+(k===0&&!fromPickup?"from base":"")+' '+Math.round(st.driveMi)+' mi · '+st.driveMin+' min</div>';
       html+='<div class="stop '+toneClass(j.tier)+'"><div class="stripe"></div>'+
         '<div class="slot"><span class="t mono">'+fmtMin(st.arrive)+'</span><span class="dur mono">'+fmtDur(j.dur)+'</span></div>'+
         '<div class="sbody">'+
           '<div class="sline1"><span class="sname">'+esc(j.name||"No name")+'</span><span class="scity">'+esc(j.city)+'</span></div>'+
-          '<div class="sline2"><b>'+esc(sy.label)+'</b> — '+esc(a.label.toLowerCase())+', '+esc(size(j.size).label.toLowerCase())+(j.crew===2?", 2 techs":"")+'</div>'+
+          '<div class="sline2"><b>'+esc(jobLabel(j))+'</b> — '+esc(a.label.toLowerCase())+', '+esc(size(j.size).label.toLowerCase())+(j.crew===2?", 2 techs":"")+'</div>'+
           (j.note?'<div class="sline2" style="color:var(--ink-3)">'+esc(j.note)+'</div>':'')+
           (j.msg?'<details class="smsg"><summary>Their text</summary><p>'+esc(j.msg)+'</p></details>':'')+
           '<div class="stags">'+
             '<span class="pill '+tonePill(j.tier)+'">'+(j.tier===1?"Heat — go early":j.tier===2?"Outdoor":"Indoor — fine midday")+'</span>'+
-            (sy.twoVisit?'<span class="pill p-warm">May need 2 trips</span>':'')+
+            (j.kind==="replace"?'<span class="pill p-warm">New AC</span>':j.kind==="part"?'<span class="pill p-warm">Part</span>':sy.twoVisit?'<span class="pill p-warm">May need 2 trips</span>':'')+
           '</div>'+
           '<div class="sacts">'+
             (j.phone?'<a class="act" href="tel:'+esc(j.phone)+'">Call</a>':'')+
@@ -624,7 +835,9 @@ function renderToday(){
             '<button class="act" data-done="'+j.id+'">Done</button>'+
           '</div>'+
         '</div></div>';
-      if(st.late){
+      if(st.late&&hotSwap(j)){
+        html+='<div class="warnrow"><b>Finishes at '+fmtMin(st.arrive+j.dur)+', past the '+d.cut.txt+' cutoff.</b> It is already first on this truck \u2014 add a tech, or keep the attic time short and take water.</div>';
+      }else if(st.late){
         html+='<div class="warnrow"><b>'+esc(a.label)+' at '+fmtMin(st.arrive)+', past the '+d.cut.txt+' cutoff.</b> It still goes today — keep the '+esc(a.label.toLowerCase())+' time short, take water, and send two if you can.</div>';
       }
     });
@@ -633,22 +846,16 @@ function renderToday(){
   if(d.spill.length){
     html+='<div class="warnrow" style="margin-top:16px"><div><b>'+d.spill.length+' call'+(d.spill.length>1?"s":"")+' won’t fit '+(d.day.tomorrow?"tomorrow":"today")+'.</b> '+
       d.spill.map(function(j){return esc(j.name||j.city)+" ("+fmtDur(j.dur)+")";}).join(", ")+
-      ' — every truck is full. They go out first the next morning, oldest call first. Or put another truck out in Rules &amp; setup.</div></div>';
+      ' — every truck is full'+(d.spill.some(hotSwap)?', or an attic or roof replacement can\u2019t be finished before the heat':'')+
+      '. They go out first the next morning, oldest call first'+(d.spill.some(hotSwap)?' \u2014 call those customers tonight':'')+
+      '. Or put another truck out in Rules &amp; setup.</div></div>';
   }
   if(totalJobs){
     html+='<div class="replan"><button type="button" class="linkish" id="replan">Plan the day again from scratch</button></div>';
   }
   $("#dayPlan").innerHTML=html;
   Array.prototype.forEach.call(document.querySelectorAll("[data-done]"),function(b){
-    b.onclick=function(){
-      var id=b.getAttribute("data-done"), j=jobById(id);
-      if(!j)return;
-      ask("Mark this job finished?",
-          (j.name||"This job")+" in "+j.city+" — "+sym(j.symptom).label.toLowerCase()+
-          ". It comes off today’s run and moves to the Finished list on the Waiting tab, where Undo can bring it back.",
-          "Mark finished","",
-          function(){finishJob(id);});
-    };
+    b.onclick=function(){openFinish(b.getAttribute("data-done"));};
   });
   /* The plan holds still once made, so the techs' lists do not shuffle every
      time a call comes in. This is the way out when that is wrong: a truck
@@ -1217,14 +1424,46 @@ function renderQueue(){
 }
 function qrow(j,right){
   return '<div class="qrow"><span class="pill '+tonePill(j.tier)+'">'+(j.tier===1?"AM":j.tier===2?"OUT":"IN")+'</span>'+
-    '<span><span class="qn">'+esc(j.name||"No name")+'</span> <span class="qm">'+esc(j.city)+' · '+esc(sym(j.symptom).label)+'</span></span>'+
+    '<span><span class="qn">'+esc(j.name||"No name")+'</span> <span class="qm">'+esc(j.city)+' · '+esc(jobLabel(j))+'</span></span>'+
     '<span class="qr"><span class="qdur">'+esc(right)+'</span><button class="xbtn" data-del="'+j.id+'" title="Remove">&times;</button></span></div>';
 }
 function drow(j){
   var when=j.doneAt?new Date(j.doneAt).toLocaleDateString(undefined,{month:"short",day:"numeric"}):"";
-  return '<div class="qrow"><span class="pill p-ok">Done</span>'+
-    '<span><span class="qn">'+esc(j.name||"No name")+'</span> <span class="qm">'+esc(j.city)+' · '+esc(sym(j.symptom).label)+'</span></span>'+
+  return '<div class="qrow">'+(j.outcome==="part"?'<span class="pill p-warm">Part</span>':j.outcome==="replace"?'<span class="pill p-warm">New AC</span>':'<span class="pill p-ok">Done</span>')+
+    '<span><span class="qn">'+esc(j.name||"No name")+'</span> <span class="qm">'+esc(j.city)+' · '+esc(jobLabel(j))+'</span></span>'+
     '<span class="qr"><span class="qdur">'+esc(when)+'</span><button class="act" data-undo="'+j.id+'">Undo</button></span></div>';
+}
+
+/* ---------- his distributors ----------
+   Where new ACs and parts are picked up. A name and a city is all the planner
+   needs: for each truck it picks the one that adds the least driving. */
+function renderDists(){
+  var ds=state.settings.dists||[];
+  var cities=CITIES.slice().sort(function(a,b){return a[0]<b[0]?-1:1;});
+  function save(next,msg){state.settings.dists=next;persistSettings();render();if(msg)toast(msg);}
+  function edit(i,key,val){return ds.map(function(d,k){var c={name:d.name,city:d.city};if(k===i)c[key]=val;return c;});}
+  $("#distForm").innerHTML=(ds.length
+    ? ds.map(function(d,i){
+        return '<div class="dist-row"><input type="text" data-dname="'+i+'" placeholder="Name" autocomplete="off" value="'+esc(d.name)+'">'+
+          '<select data-dcity="'+i+'">'+cities.map(function(c){return '<option'+(c[0]===d.city?' selected':'')+'>'+esc(c[0])+'</option>';}).join("")+'</select>'+
+          '<button type="button" class="xbtn" data-ddel="'+i+'" title="Remove">&times;</button></div>';
+      }).join("")
+    : '<p class="savenote">None yet. Until one is added, pickups are planned at the shop.</p>')+
+    '<button type="button" class="btn ghost sm" id="distAdd">Add a distributor</button>';
+  Array.prototype.forEach.call(document.querySelectorAll("[data-dname]"),function(el){
+    el.onchange=function(){save(edit(+el.getAttribute("data-dname"),"name",el.value.trim()),"Distributor saved");};
+  });
+  Array.prototype.forEach.call(document.querySelectorAll("[data-dcity]"),function(el){
+    el.onchange=function(){save(edit(+el.getAttribute("data-dcity"),"city",el.value),"Distributor saved");};
+  });
+  Array.prototype.forEach.call(document.querySelectorAll("[data-ddel]"),function(el){
+    el.onclick=function(){var i=+el.getAttribute("data-ddel");save(ds.filter(function(d,k){return k!==i;}),"Distributor removed");};
+  });
+  $("#distAdd").onclick=function(){
+    save(ds.concat([{name:"",city:state.settings.base}]));
+    var ins=document.querySelectorAll("[data-dname]");
+    if(ins.length)ins[ins.length-1].focus();
+  };
 }
 
 /* ---------- rules tab ---------- */
@@ -1260,9 +1499,11 @@ function renderRules(){
   Array.prototype.forEach.call(document.querySelectorAll("[data-set]"),function(el){
     el.onchange=function(){
       state.settings[el.getAttribute("data-set")]=el.value;
+      state.jobs.forEach(hydrate);             // a replacement's length comes from settings
       persistSettings();render();toast("Setting saved");
     };
   });
+  renderDists();
 
   var when = state.savedAt ? new Date(state.savedAt).toLocaleString(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}) : "not yet";
   var where = state.idbOk===true
@@ -1292,7 +1533,7 @@ function renderRules(){
   $("#bkClose").onclick=function(){$("#bkBox").style.display="none";};
   $("#bkDo").onclick=function(){ tryRestore($("#bkText").value); };
   $("#resetEx").onclick=function(){
-    ask("Load the example jobs?","Adds 18 sample jobs alongside his real ones, so you can see the routing work. They are labelled and can be cleared again.",
+    ask("Load the example jobs?","Adds 20 sample jobs alongside his real ones, so you can see the routing work. They are labelled and can be cleared again.",
         "Load examples","",
         function(){examples().forEach(function(j){state.jobs.push(j);});saveLocal();render();toast("Examples loaded");});
   };
@@ -1454,7 +1695,7 @@ function sayJob(j){
   if(j.city)bits.push(j.city);
   if(j.addr)bits.push(sayAddr(j.addr));
   bits.push(ACC_SAY[j.access]||acc(j.access).label.toLowerCase());
-  bits.push(saySymptom(j.symptom));
+  bits.push(j.kind?jobLabel(j).replace(/\s*\(.*\)$/,"").toLowerCase():saySymptom(j.symptom));
   var s=bits.join(", ")+".";
   if(j.note)s+=" "+sayNote(j.note.trim().replace(/\.$/,""))+".";
   return s;
@@ -1469,7 +1710,8 @@ function buildSheet(){
     if(!r)return;
     var area=areaName(r.stops.map(function(st){return st.job;}));
     r.stops.forEach(function(st,k){
-      out.push({truck:i+1,n:k+1,of:r.stops.length,st:st,area:area,cut:d.cut});
+      var pk=null; r.pickups.forEach(function(p){if(p.before===k)pk=p;});
+      out.push({truck:i+1,n:k+1,of:r.stops.length,st:st,area:area,cut:d.cut,pickup:pk});
     });
   });
   return out;
@@ -1509,6 +1751,8 @@ function renderSheet(){
   $("#sheetDots").innerHTML=dots;
 
   var h="";
+  if(e.pickup)h+='<div class="sh-note sh-pick"><div class="sh-k">First, pick up</div><p>'+esc(pickupWhat(e.pickup))+
+    ' at '+esc(e.pickup.dist.name)+', '+esc(e.pickup.dist.city)+' &mdash; '+fmtMin(e.pickup.arrive)+'</p></div>';
   h+='<div class="sh-when">'+fmtMin(e.st.arrive)+"<span>"+fmtDur(j.dur)+" on site"+
      (j.crew===2?" &middot; 2 techs":"")+"</span></div>";
   h+='<div class="sh-who">'+esc(j.name||"No name")+"</div>";
@@ -1519,7 +1763,7 @@ function renderSheet(){
      "<p>&ldquo;"+esc(sayJob(j))+"&rdquo;</p></div>";
 
   h+='<div class="sh-facts">';
-  h+='<div class="sh-fact"><b>'+esc(sym(j.symptom).label)+"</b><span>what they said</span></div>";
+  h+='<div class="sh-fact"><b>'+esc(jobLabel(j))+"</b><span>"+(j.kind?"the job":"what they said")+"</span></div>";
   h+='<div class="sh-fact"><b>'+esc(acc(j.access).label)+"</b><span>where the unit is</span></div>";
   h+='<div class="sh-fact"><b>'+esc(size(j.size).label)+"</b><span>system</span></div>";
   h+="</div>";
@@ -1528,7 +1772,8 @@ function renderSheet(){
      it carries digits — a gate code has to be read off exactly, not as words. */
   if(j.note&&/[0-9]/.test(j.note))
     h+='<div class="sh-note"><div class="sh-k">Exactly as written</div><p>'+esc(j.note)+"</p></div>";
-  if(e.st.late)h+='<div class="sh-warn">Past the '+e.cut.txt+" cutoff for "+
+  if(e.st.late&&hotSwap(j))h+='<div class="sh-warn">Finishes at '+fmtMin(e.st.arrive+j.dur)+', past the '+e.cut.txt+' cutoff. Add a tech or keep the attic time short.</div>';
+  else if(e.st.late)h+='<div class="sh-warn">Past the '+e.cut.txt+" cutoff for "+
                   esc(acc(j.access).label.toLowerCase())+" work. Keep it short and take water.</div>";
 
   if(j.phone)h+='<a class="sh-call" href="tel:'+esc(j.phone.replace(/[^0-9+]/g,""))+'">Call '+esc(j.phone)+"</a>";
@@ -1605,8 +1850,8 @@ function tryRestore(raw){
       "This replaces everything currently on the board with the contents of the backup.",
       "Restore","danger",
       function(){
-        state.jobs=d2.jobs.map(hydrate);
         if(d2.settings)state.settings=Object.assign({},DEF,d2.settings);
+        state.jobs=d2.jobs.map(hydrate);
         if(d2.hi)state.hi=d2.hi;
         saveLocal();$("#bkBox").style.display="none";render();
         toast("Restored "+d2.jobs.length+" jobs");
@@ -1630,7 +1875,7 @@ function closeWeek(){
   document.body.style.overflow="";
 }
 function weekJobRow(j,time){
-  var bits=[sym(j.symptom).label,acc(j.access).label,size(j.size).label];
+  var bits=[jobLabel(j),acc(j.access).label,size(j.size).label];
   if(j.crew===2)bits.push("2 techs");
   return '<div class="wk-job">'+
     '<div class="wk-j1">'+(time?'<span class="mono">'+esc(time)+'</span>':'')+'<b>'+esc(j.name||"No name")+'</b>'+
@@ -1660,7 +1905,13 @@ function renderWeek(){
     if(!r)return;
     h+='<div class="wk-group"><div class="wk-head">Truck '+(i+1)+' &middot; '+
        esc(areaName(r.stops.map(function(st){return st.job;})))+' &middot; '+when+'</div>';
-    r.stops.forEach(function(st){h+=weekJobRow(st.job,fmtMin(st.arrive));});
+    r.stops.forEach(function(st,k){
+      r.pickups.forEach(function(p){
+        if(p.before===k)h+='<div class="wk-job wk-pick"><div class="wk-j1"><span class="mono">'+fmtMin(p.arrive)+'</span><b>Pick up '+esc(pickupWhat(p))+'</b></div>'+
+          '<div class="wk-j3">'+esc(p.dist.name+", "+p.dist.city)+'</div></div>';
+      });
+      h+=weekJobRow(st.job,fmtMin(st.arrive));
+    });
     h+='</div>';
   });
   if(d.spill.length){

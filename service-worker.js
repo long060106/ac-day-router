@@ -10,7 +10,7 @@
    value installs a clean copy of everything and deletes the old cache.
    Forget to bump it and he keeps running the previous build.
    ============================================================ */
-var VERSION = "2026-09-14b";
+var VERSION = "2026-09-14c";
 var CACHE   = "acdr-" + VERSION;
 
 /* Relative paths on purpose: this has to work from /ac-day-router/ on
