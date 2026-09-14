@@ -24,14 +24,15 @@ var CITIES=[
 ];
 var CITY_NI={};CITIES.forEach(function(c){CITY_NI[c[0]]=c[1];});
 
+/* Zones name stretches of the corridor. Since Stage 06 they only label a
+   truck's area; they no longer decide which day anyone is visited. */
 var ZONES=[
- {id:"Z1",name:"Dade",       range:"Homestead → Miami Lakes",       max:32, day:1, dayName:"Monday"},
- {id:"Z2",name:"The Line",   range:"North Dade → Hollywood/Davie",  max:45, day:2, dayName:"Tuesday"},
- {id:"Z3",name:"Lauderdale", range:"Plantation → Oakland Park",     max:52, day:3, dayName:"Wednesday"},
- {id:"Z4",name:"North",      range:"Pompano → Boca & up",           max:999,day:4, dayName:"Thursday"}
+ {id:"Z1",name:"Dade",       range:"Homestead → Miami Lakes",       max:32},
+ {id:"Z2",name:"The Line",   range:"North Dade → Hollywood/Davie",  max:45},
+ {id:"Z3",name:"Lauderdale", range:"Plantation → Oakland Park",     max:52},
+ {id:"Z4",name:"North",      range:"Pompano → Boca & up",           max:999}
 ];
 function zoneOf(ni){for(var i=0;i<ZONES.length;i++){if(ni<=ZONES[i].max)return ZONES[i];}return ZONES[3];}
-function zoneById(id){for(var i=0;i<ZONES.length;i++){if(ZONES[i].id===id)return ZONES[i];}return null;}
 
 /* ============================================================
    SYMPTOMS — base minutes: 1 tech, <=2.5 ton, easy access
@@ -75,9 +76,9 @@ var SIZES=[
 ];
 function size(id){for(var i=0;i<SIZES.length;i++){if(SIZES[i].id===id)return SIZES[i];}return SIZES[0];}
 
-/* Urgency on a job: "em" goes today and breaks the zone; "soon" and "flex"
-   wait for their zone day. New calls are always "em" (see NEW_CALL). The
-   other two live on in older jobs and the examples. */
+/* Jobs saved before Stage 06 carry an urgency ("em", "soon", "flex"). It no
+   longer changes anything: every call is an emergency and goes out as soon
+   as a truck can take it. */
 
 /* ============================================================
    SETTINGS
@@ -127,9 +128,7 @@ function routeJobs(list,baseNi,startMin,cut){
   var far=nis.length?nis.reduce(function(a,b){return Math.abs(b-baseNi)>Math.abs(a-baseNi)?b:a;},nis[0]):baseNi;
   var up = far>=baseNi;
   arr.sort(function(a,b){
-    var ae=a.urgency==="em"?0:1, be=b.urgency==="em"?0:1;
-    if(ae!==be) return ae-be;                      // no-cool in Florida goes first
-    if(a.tier!==b.tier) return a.tier-b.tier;      // then hot places before the day cooks
+    if(a.tier!==b.tier) return a.tier-b.tier;      // hot places before the day cooks
     return up ? a.ni-b.ni : b.ni-a.ni;             // then sweep the corridor one way
   });
   var t=startMin, prev=baseNi, out=[], miles=0;
@@ -143,14 +142,6 @@ function routeJobs(list,baseNi,startMin,cut){
   var home=legMiles(prev,baseNi); miles+=home;
   return {stops:out, miles:Math.round(miles), endMin:t+legMin(home), homeMi:Math.round(home)};
 }
-/* The SAME truck's SAME jobs, driven in the order the phone rang. */
-function naiveMiles(list,baseNi){
-  var arr=list.slice().sort(function(a,b){return a.created-b.created;});
-  var prev=baseNi,mi=0,mins=0;
-  for(var i=0;i<arr.length;i++){var d=legMiles(prev,arr[i].ni);mi+=d;mins+=legMin(d);prev=arr[i].ni;}
-  var h=legMiles(prev,baseNi);mi+=h;mins+=legMin(h);
-  return {miles:Math.round(mi),mins:mins};
-}
 function routedMins(r){var m=0;r.stops.forEach(function(s){m+=s.driveMin;});return m+legMin(r.homeMi);}
 
 /* ============================================================
@@ -158,7 +149,7 @@ function routedMins(r){var m=0;r.stops.forEach(function(s){m+=s.driveMin;});retu
    ============================================================ */
 var state={jobs:[],settings:Object.assign({},DEF),tab:"today",hi:94,draft:blankDraft(),
            seeded:false,savedAt:0,saveError:false,idbOk:null,persisted:null,
-           lastBackupAt:0,nagSnoozeUntil:0};
+           lastBackupAt:0,nagSnoozeUntil:0,ready:false,dispatched:""};
 var LS="acdayrouter.v1";
 
 function uid(){return "j"+Date.now().toString(36)+Math.random().toString(36).slice(2,6);}
@@ -241,7 +232,8 @@ function idbSave(rec){
 function snapshot(){
   return { v:2, seeded:true, jobs:state.jobs, settings:state.settings,
            hi:state.hi, savedAt:Date.now(),
-           lastBackupAt:state.lastBackupAt, nagSnoozeUntil:state.nagSnoozeUntil };
+           lastBackupAt:state.lastBackupAt, nagSnoozeUntil:state.nagSnoozeUntil,
+           dispatched:state.dispatched };
 }
 function mirrorToLocal(rec){
   try{ localStorage.setItem(LS,JSON.stringify(rec)); state.lsOk=true; }
@@ -264,6 +256,7 @@ function adoptRecord(d){
   state.savedAt=d.savedAt||0;
   state.lastBackupAt=d.lastBackupAt||0;
   state.nagSnoozeUntil=d.nagSnoozeUntil||0;
+  state.dispatched=d.dispatched||"";
 }
 function loadLocal(){
   try{
@@ -330,85 +323,196 @@ function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,function(c){return
 function toneClass(t){return t===1?"s-hot":t===2?"s-warm":"s-in";}
 function tonePill(t){return t===1?"p-hot":t===2?"p-warm":"p-in";}
 
-function todaysZone(){
-  var dow=new Date().getDay(); // 0 Sun .. 6 Sat
-  for(var i=0;i<ZONES.length;i++){if(ZONES[i].day===dow)return ZONES[i];}
-  return null; // Fri/Sat/Sun -> overflow: pick the fullest zone
+/* ============================================================
+   THE PLAN — every call goes out as soon as a truck can take it,
+   and each truck keeps to one stretch of the corridor.
+   This replaced the fixed zone-per-weekday rule in Stage 06. People
+   only call when the AC is broken, so nobody can wait for their
+   zone's day to come round.
+   ============================================================ */
+
+/* How much a customer's wait weighs against driving: one customer waiting
+   one hour counts the same as 5 extra miles. Lower it and the plan uses
+   fewer trucks to save gas; raise it and it spreads calls over more trucks
+   so people are reached sooner. */
+var WAIT_MI_PER_HOUR=5;
+/* An attic or roof stop that lands past the heat cutoff counts as 40 extra
+   miles, so the plan would rather drive further than send a tech up there
+   at 2pm. It still goes if there is no other way. */
+var LATE_HOT_MI=40;
+
+function dayKey(d){
+  var m=d.getMonth()+1, n=d.getDate();
+  return d.getFullYear()+"-"+(m<10?"0":"")+m+"-"+(n<10?"0":"")+n;
 }
-function fullestZone(){
-  var best=null,bn=-1;
-  ZONES.forEach(function(z){
-    var n=openJobs().filter(function(j){return j.zone===z.id&&j.urgency!=="em";}).length;
-    if(n>bn){bn=n;best=z;}
-  });
-  return best;
+function planSettings(){
+  var s=state.settings, p=String(s.start||"07:00").split(":");
+  return {
+    baseNi:  CITY_NI[s.base]!==undefined?CITY_NI[s.base]:48,
+    startMin:(+p[0])*60+(+p[1]||0),
+    capMin:  Math.round((parseFloat(s.hours)||8.5)*60),
+    nTrucks: Math.max(1,Math.min(4,parseInt(s.trucks,10)||2)),
+    cut:     cutoffFor(parseInt(state.hi,10)||90)
+  };
+}
+/* Once the working day is over (start + hours per truck + an hour to drive
+   home) there is no point planning a day that has ended, so the board plans
+   tomorrow instead. That is the evening view. */
+function planDay(ps){
+  var now=new Date(), mins=now.getHours()*60+now.getMinutes();
+  var tomorrow=mins>=ps.startMin+ps.capMin+60;
+  var d=new Date(now.getFullYear(),now.getMonth(),now.getDate()+(tomorrow?1:0));
+  return {key:dayKey(d),date:d,tomorrow:tomorrow};
 }
 
-function buildToday(){
-  var zone=todaysZone(), overflow=false;
-  if(!zone){zone=fullestZone();overflow=true;}
-  var cut=cutoffFor(parseInt(state.hi,10)||90);
-  var baseNi=CITY_NI[state.settings.base]!==undefined?CITY_NI[state.settings.base]:48;
-  var startMin=(function(s){var p=String(s||"07:00").split(":");return (+p[0])*60+(+p[1]||0);})(state.settings.start);
+/* What one truck's day costs: miles, plus customers waiting, plus hot stops
+   that land too late. ok is false when the day runs past the hours per truck,
+   except for a single long job, which has to go on some truck anyway. */
+function routeCost(list,ps){
+  if(!list.length)return {ok:true,cost:0};
+  var r=routeJobs(list,ps.baseNi,ps.startMin,ps.cut), wait=0, late=0;
+  r.stops.forEach(function(st){wait+=st.arrive-ps.startMin;if(st.late)late++;});
+  return {ok:list.length===1||r.endMin-ps.startMin<=ps.capMin,
+          cost:r.miles+WAIT_MI_PER_HOUR*wait/60+LATE_HOT_MI*late};
+}
 
-  var open=openJobs();
-  var ems=open.filter(function(j){return j.urgency==="em";});
-  var zoneJobs=open.filter(function(j){return j.urgency!=="em"&&j.zone===zone.id;});
-  var pool=ems.concat(zoneJobs);
+/* Split calls across at most n trucks. Along one corridor the best split is
+   always into runs of neighbouring calls, so sort by position and try every
+   place to cut. A few hundred routes at most, which is instant on a phone.
+   Returns null when the calls cannot all fit. */
+function splitByArea(jobs,n,ps){
+  var s=jobs.slice().sort(function(a,b){return a.ni-b.ni||(a.created||0)-(b.created||0);});
+  var N=s.length, memo={}, best=[], from=[], k, i, a, c;
+  function seg(a,b){
+    var key=a+":"+b;
+    if(!(key in memo)){var rc=routeCost(s.slice(a,b),ps);memo[key]=rc.ok?rc.cost:Infinity;}
+    return memo[key];
+  }
+  for(k=0;k<=n;k++){best.push([]);from.push([]);for(i=0;i<=N;i++){best[k].push(Infinity);from[k].push(-1);}}
+  best[0][0]=0;
+  /* best[k][i] = the cheapest way to cover the first i calls with k trucks */
+  for(k=1;k<=n;k++)for(i=1;i<=N;i++)for(a=k-1;a<i;a++){
+    if(best[k-1][a]===Infinity)continue;
+    c=best[k-1][a]+seg(a,i);
+    if(c<best[k][i]){best[k][i]=c;from[k][i]=a;}
+  }
+  var bk=-1, bc=Infinity;
+  for(k=1;k<=n;k++)if(best[k][N]<bc){bc=best[k][N];bk=k;}
+  if(bk<0)return null;
+  var out=[];
+  for(k=bk,i=N;k>=1;k--){a=from[k][i];out.unshift(s.slice(a,i));i=a;}
+  return out;
+}
 
-  var capMin=Math.round((parseFloat(state.settings.hours)||8.5)*60);
-  var nTrucks=Math.max(1,Math.min(4,parseInt(state.settings.trucks,10)||2));
-  var buckets=[],used=[];
-  for(var i=0;i<nTrucks;i++){buckets.push([]);used.push(0);}
-  state.jobs.forEach(function(j){j._overflow=false;j._piggy=null;});
-
-  // Emergencies are scattered by nature — spread them so one truck isn't
-  // crossing the whole corridor twice. Everything else CLUSTERS: fill
-  // truck 1 before opening truck 2, or the batching undoes itself.
-  var truckEmZones=[];for(var t2=0;t2<nTrucks;t2++)truckEmZones.push({});
-  ems.slice().sort(function(a,b){return a.ni-b.ni;}).forEach(function(j,i){
-    var k=i%nTrucks; buckets[k].push(j); used[k]+=j.dur;
-    if(j.zone!==zone.id) truckEmZones[k][j.zone]=1;
+/* Until the techs have their lists, the plan is free to reshuffle each time a
+   call is added, so calls entered the night before or early in the morning
+   still get the best split. It locks when the working day starts, or sooner
+   if he opens the call sheet, since reading it out is how he hands out lists. */
+function planLocked(ps,day){
+  if(state.dispatched===day.key)return true;
+  if(day.tomorrow)return false;
+  var now=new Date();
+  return now.getHours()*60+now.getMinutes()>=ps.startMin;
+}
+/* Which truck each open call is on, for the day being planned.
+   Before the day locks, everything is split by area from scratch. Once it
+   locks the plan holds still: a new call joins the truck it adds the least
+   to, and nobody else's list changes.
+   extra is a call that is not saved yet, used to show where it would land.
+   Nothing is written here; commitPlan does that. */
+function assignDay(extra){
+  var ps=planSettings(), day=planDay(ps), trucks=[], loose=[], spill=[], k;
+  for(k=0;k<ps.nTrucks;k++)trucks.push([]);
+  var open=openJobs(), locked=planLocked(ps,day); if(extra)open.push(extra);
+  open.forEach(function(j){
+    if(locked&&j.day===day.key&&j.truck>=1&&j.truck<=ps.nTrucks)trucks[j.truck-1].push(j);
+    else loose.push(j);
   });
+  loose.sort(function(a,b){return (a.created||0)-(b.created||0);});   // oldest call first
 
-  // A truck already driving off-zone for an emergency should not come home
-  // empty. Pull that zone's waiting work along for the ride \u2014 the drive
-  // is already paid for.
-  var piggy={};
-  for(var k2=0;k2<nTrucks;k2++){
-    Object.keys(truckEmZones[k2]).forEach(function(zid){
-      open.filter(function(j){return j.urgency!=="em"&&j.zone===zid&&!piggy[j.id];})
-        .sort(function(a,b){return a.tier-b.tier||a.ni-b.ni;})
-        .forEach(function(j){
-          if(used[k2]+j.dur<=capMin){buckets[k2].push(j);used[k2]+=j.dur;piggy[j.id]=1;j._piggy=zid;}
-        });
-    });
+  var fresh=!trucks.some(function(t){return t.length;});
+  if(fresh){
+    /* More calls than the trucks can do: the most recent call is set aside
+       and the split is tried again. First called, first served. */
+    var parts=null, aside=[];
+    while(loose.length&&!(parts=splitByArea(loose,ps.nTrucks,ps)))aside.unshift(loose.pop());
+    if(parts)parts.forEach(function(p,i){trucks[i]=p;});
+    /* Keeping each truck to one unbroken stretch is only the best split while
+       the trucks have time to spare. Once they are full it strands calls that
+       another truck still has room for, and driving a little further today
+       beats leaving someone without AC until tomorrow. So the set-aside calls
+       get a second try, oldest first. */
+    loose=aside;
   }
-
-  // A truck sent off-zone is COMMITTED to that end of the county. Giving it
-  // today's zone work too just rebuilds the zigzag we are trying to kill.
-  var committed=[];
-  for(var k3=0;k3<nTrucks;k3++){
-    var zs=Object.keys(truckEmZones[k3]);
-    committed.push(zs.length?zs[0]:null);
+  loose.forEach(function(j){ if(!placeCall(trucks,j,ps,fresh))spill.push(j); });
+  return {ps:ps,day:day,trucks:trucks,spill:spill};
+}
+/* Put one call on the truck it adds the least to. If no truck has room and
+   mayMove is true — the day has not been handed to the techs yet — one call
+   already placed may move to another truck, when the gap it leaves is the
+   room this call needs. Returns false when it fits nowhere. */
+function placeCall(trucks,j,ps,mayMove){
+  var best=null, cost=trucks.map(function(t){return routeCost(t,ps).cost;}), i, k, m, add;
+  for(i=0;i<trucks.length;i++){
+    var after=routeCost(trucks[i].concat([j]),ps);
+    if(after.ok){add=after.cost-cost[i];if(!best||add<best.add)best={add:add,to:i};}
   }
-  zoneJobs.slice().sort(function(a,b){return a.tier-b.tier||a.ni-b.ni;}).forEach(function(j){
-    var pick=-1;
-    for(var k=0;k<nTrucks;k++){                       // free trucks first
-      if(!committed[k]&&used[k]+j.dur<=capMin){pick=k;break;}
-    }
-    if(pick<0){          // a committed truck only takes work in the zone it is already in
-      for(var k2=0;k2<nTrucks;k2++){
-        if(committed[k2]===j.zone&&used[k2]+j.dur<=capMin){pick=k2;break;}
+  if(!best&&mayMove){
+    for(i=0;i<trucks.length;i++)for(m=0;m<trucks[i].length;m++){
+      var withJ=routeCost(trucks[i].slice(0,m).concat(trucks[i].slice(m+1),[j]),ps);
+      if(!withJ.ok)continue;
+      for(k=0;k<trucks.length;k++){
+        if(k===i)continue;
+        var moved=routeCost(trucks[k].concat([trucks[i][m]]),ps);
+        if(!moved.ok)continue;
+        add=withJ.cost+moved.cost-cost[i]-cost[k];
+        if(!best||add<best.add)best={add:add,to:i,move:m,into:k};
       }
     }
-    if(pick<0){j._overflow=true;return;}   // better to roll it than to zigzag
-    buckets[pick].push(j);used[pick]+=j.dur;
-  });
+  }
+  if(!best)return false;
+  if(best.move!==undefined)trucks[best.into].push(trucks[best.to].splice(best.move,1)[0]);
+  trucks[best.to].push(j);
+  return true;
+}
 
-  var routes=buckets.map(function(b){return b.length?routeJobs(b,baseNi,startMin,cut):null;});
-  var spill=pool.filter(function(j){return j._overflow;});
-  return {zone:zone,overflow:overflow,cut:cut,routes:routes,buckets:buckets,pool:pool,spill:spill,baseNi:baseNi,piggy:piggy};
+/* Write the plan onto the jobs so it holds still while he dispatches. A call
+   that did not fit loses its slot and is tried again every time the board is
+   drawn, so it gets pulled in as soon as a truck frees up. */
+function commitPlan(){
+  var p=assignDay(null), changed=false;
+  p.trucks.forEach(function(list,i){
+    list.forEach(function(j){
+      if(j.day!==p.day.key||j.truck!==i+1){j.day=p.day.key;j.truck=i+1;changed=true;}
+    });
+  });
+  p.spill.forEach(function(j){if(j.truck){j.day="";j.truck=0;changed=true;}});
+  if(changed)saveLocal();
+}
+function buildToday(extra){
+  var p=assignDay(extra||null), ps=p.ps;
+  return {day:p.day, cut:ps.cut, baseNi:ps.baseNi, spill:p.spill,
+          routes:p.trucks.map(function(list){return list.length?routeJobs(list,ps.baseNi,ps.startMin,ps.cut):null;})};
+}
+/* A truck's area, named by the stretch of corridor its calls cover. */
+function areaName(jobs){
+  if(!jobs.length)return "";
+  var nis=jobs.map(function(j){return j.ni;});
+  var lo=zoneOf(Math.min.apply(null,nis)), hi=zoneOf(Math.max.apply(null,nis));
+  return lo.id===hi.id?lo.name:lo.name+" → "+hi.name;
+}
+/* Where a call lands: its truck and arrival time, or truck 0 when every
+   truck is full. Works for a saved job and for one still being entered. */
+function whereItGoes(job){
+  var d=buildToday(state.jobs.indexOf(job)<0?job:null);
+  for(var i=0;i<d.routes.length;i++){
+    if(!d.routes[i])continue;
+    var stops=d.routes[i].stops;
+    for(var k=0;k<stops.length;k++){
+      if(stops[k].job===job)return {truck:i+1,arrive:stops[k].arrive,tomorrow:d.day.tomorrow};
+    }
+  }
+  return {truck:0,tomorrow:d.day.tomorrow};
 }
 
 /* ---------- confirm + toast ---------- */
@@ -454,20 +558,20 @@ function reopenJob(id){
 }
 
 function renderToday(){
-  var d=buildToday(), s=state.settings;
-  var dt=new Date();
+  var d=buildToday();
   var dayNames=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
-  $("#dayTitle").textContent=dayNames[dt.getDay()]+"'s run";
-  $("#daySub").innerHTML = d.overflow
-    ? 'Overflow day — no zone assigned, so it’s working the fullest one: <b>'+esc(d.zone.name)+'</b>.'
-    : 'Zone day: <b>'+esc(d.zone.name)+'</b> — '+esc(d.zone.range)+'. Emergencies anywhere still go today.';
+  var dn=dayNames[d.day.date.getDay()];
+  $("#dayTitle").textContent=d.day.tomorrow?"Tomorrow's run":dn+"'s run";
+  $("#daySub").innerHTML=d.day.tomorrow
+    ? 'Today’s hours are over, so this plans <b>'+dn+'</b>. A call saved now goes out first thing.'
+    : 'Every call goes out as soon as a truck can take it. Each truck keeps to one part of the county.';
 
   renderNag();
 
   // example banner
   var hasEx=state.jobs.some(function(j){return j.example;});
   $("#exNote").innerHTML = hasEx
-    ? '<div class="ex-note"><span>These jobs are examples so you can see the routing work on any day of the week. Clear them once his real calls go in.</span><button class="btn ghost sm" id="clrEx">Clear examples</button></div>'
+    ? '<div class="ex-note"><span>These jobs are examples so you can see the routing work. Clear them once his real calls go in.</span><button class="btn ghost sm" id="clrEx">Clear examples</button></div>'
     : '';
   if(hasEx){$("#clrEx").onclick=function(){
     var n=state.jobs.filter(function(j){return j.example;}).length;
@@ -491,15 +595,15 @@ function renderToday(){
 
   // plan
   var html="";
-  if(!totalJobs){
-    html='<div class="card empty"><span class="disp">Nothing on the board for '+esc(d.zone.name)+'</span>Add a call, or check the Waiting tab — other zones may be stacked up.</div>';
+  if(!totalJobs&&!d.spill.length){
+    html='<div class="card empty"><span class="disp">No open calls</span>Add a call and it goes straight onto a truck.</div>';
   }
   d.routes.forEach(function(r,i){
     if(!r)return;
-    var mins=routedMins(r);
+    var area=areaName(r.stops.map(function(st){return st.job;}));
     html+='<div class="day-crew"><div class="crew-tag"><span class="disp">Truck '+(i+1)+'</span>'+
-      '<span class="pill p-in">'+r.stops.length+' stop'+(r.stops.length>1?"s":"")+'</span>'+
-      '<span class="meta">'+r.miles+' mi · '+fmtDur(mins)+' driving · back '+fmtMin(r.endMin)+'</span></div><div class="stops">';
+      '<span class="pill p-in">'+esc(area)+'</span>'+
+      '<span class="meta">'+r.stops.length+' stop'+(r.stops.length>1?"s":"")+' · '+r.miles+' mi · back '+fmtMin(r.endMin)+'</span></div><div class="stops">';
     r.stops.forEach(function(st,k){
       var j=st.job, a=acc(j.access), sy=sym(j.symptom);
       html+='<div class="drive">'+(k===0?"from base":"")+' '+Math.round(st.driveMi)+' mi · '+st.driveMin+' min</div>';
@@ -511,9 +615,6 @@ function renderToday(){
           (j.note?'<div class="sline2" style="color:var(--ink-3)">'+esc(j.note)+'</div>':'')+
           (j.msg?'<details class="smsg"><summary>Their text</summary><p>'+esc(j.msg)+'</p></details>':'')+
           '<div class="stags">'+
-            (j.urgency==="em"?'<span class="pill p-em">Emergency</span>':'')+
-            (j.urgency==="em"&&j.zone!==d.zone.id?'<span class="pill p-warm">Off-zone — '+esc(zoneById(j.zone).name)+'</span>':'')+
-            (j._piggy?'<span class="pill p-ok">Picked up — truck was already in '+esc(zoneById(j._piggy).name)+'</span>':'')+
             '<span class="pill '+tonePill(j.tier)+'">'+(j.tier===1?"Heat — go early":j.tier===2?"Outdoor":"Indoor — fine midday")+'</span>'+
             (sy.twoVisit?'<span class="pill p-warm">May need 2 trips</span>':'')+
           '</div>'+
@@ -524,17 +625,18 @@ function renderToday(){
           '</div>'+
         '</div></div>';
       if(st.late){
-        html+= j.urgency==="em"
-          ? '<div class="warnrow"><b>'+esc(a.label)+' at '+fmtMin(st.arrive)+', past the '+d.cut.txt+' cutoff.</b> It is an emergency, so it goes anyway — send two, send water, and keep the '+esc(a.label.toLowerCase())+' time short.</div>'
-          : '<div class="warnrow"><b>Too late for the '+esc(a.label.toLowerCase())+'.</b> This lands at '+fmtMin(st.arrive)+', past the '+d.cut.txt+' cutoff. Only one '+esc(a.label.toLowerCase())+' job fits per morning — move this one to the next zone day.</div>';
+        html+='<div class="warnrow"><b>'+esc(a.label)+' at '+fmtMin(st.arrive)+', past the '+d.cut.txt+' cutoff.</b> It still goes today — keep the '+esc(a.label.toLowerCase())+' time short, take water, and send two if you can.</div>';
       }
     });
     html+='<div class="drive">'+r.homeMi+' mi back to base</div></div></div>';
   });
   if(d.spill.length){
-    html+='<div class="warnrow" style="margin-top:16px"><div><b>'+d.spill.length+' job'+(d.spill.length>1?"s":"")+' didn’t fit today.</b> '+
-      d.spill.map(function(j){return esc(j.name)+" ("+fmtDur(j.dur)+")";}).join(", ")+
-      ' — every truck is either full or committed to an off-zone emergency. These roll to the next '+esc(d.zone.name)+' day, or put another truck out in setup.</div></div>';
+    html+='<div class="warnrow" style="margin-top:16px"><div><b>'+d.spill.length+' call'+(d.spill.length>1?"s":"")+' won’t fit '+(d.day.tomorrow?"tomorrow":"today")+'.</b> '+
+      d.spill.map(function(j){return esc(j.name||j.city)+" ("+fmtDur(j.dur)+")";}).join(", ")+
+      ' — every truck is full. They go out first the next morning, oldest call first. Or put another truck out in Rules &amp; setup.</div></div>';
+  }
+  if(totalJobs){
+    html+='<div class="replan"><button type="button" class="linkish" id="replan">Plan the day again from scratch</button></div>';
   }
   $("#dayPlan").innerHTML=html;
   Array.prototype.forEach.call(document.querySelectorAll("[data-done]"),function(b){
@@ -543,36 +645,60 @@ function renderToday(){
       if(!j)return;
       ask("Mark this job finished?",
           (j.name||"This job")+" in "+j.city+" — "+sym(j.symptom).label.toLowerCase()+
-          ". It comes off today\u2019s run and moves to the Finished list on the Waiting tab, where Undo can bring it back.",
+          ". It comes off today’s run and moves to the Finished list on the Waiting tab, where Undo can bring it back.",
           "Mark finished","",
           function(){finishJob(id);});
     };
   });
+  /* The plan holds still once made, so the techs' lists do not shuffle every
+     time a call comes in. This is the way out when that is wrong: a truck
+     broke down, or calls were added before the day was dispatched. */
+  var rp=$("#replan");
+  if(rp)rp.onclick=function(){
+    ask("Plan the day again?",
+        "Every open call is split across the trucks again, so a tech may get a different list. Do it before calling the techs, or when a truck goes down.",
+        "Plan again","",
+        function(){
+          openJobs().forEach(function(j){j.day="";j.truck=0;});
+          saveLocal();render();toast("Day planned again");
+        });
+  };
 
   renderSavings(d);
 }
 function cell(k,v){return '<div class="ro-cell"><div class="k">'+k+'</div><div class="v">'+v+'</div></div>';}
 
 function renderSavings(d){
-  var all=[];d.routes.forEach(function(r){if(r)r.stops.forEach(function(s){all.push(s.job);});});
+  var used=d.routes.filter(Boolean), all=[];
+  used.forEach(function(r){r.stops.forEach(function(s){all.push(s.job);});});
   if(all.length<2){
-    $("#savings").innerHTML='<div class="empty">Needs at least two stops before there\u2019s a route to compare.</div>';
+    $("#savings").innerHTML='<div class="empty">Needs at least two stops before there’s a route to compare.</div>';
     return;
   }
-  var baseNi=d.baseNi, n=all.length;
+  var baseNi=d.baseNi, n=all.length, k=used.length, i;
 
-  /* The saving is NOT from resorting one zone \u2014 it is from not crossing
-     zones in the same day. So compare the two POLICIES on the same workload:
-     take n jobs in the order the phone rang, wherever they are, and drive
-     them in that order (what he does now) vs. today's one-zone plan. */
-  var byCall=openJobs().slice().sort(function(a,b){return a.created-b.created;}).slice(0,n);
-  var prev=baseNi, nvMi=0, nvMin=0;
-  byCall.forEach(function(j){var mi=legMiles(prev,j.ni);nvMi+=mi;nvMin+=legMin(mi);prev=j.ni;});
-  var hb=legMiles(prev,baseNi); nvMi+=hb; nvMin+=legMin(hb);
+  /* Without a plan, each call goes to the next truck in turn and every truck
+     drives its calls in the order they rang. Same calls, same trucks: the
+     only difference measured is the grouping. */
+  var byCall=all.slice().sort(function(a,b){return (a.created||0)-(b.created||0);});
+  var nv=[];for(i=0;i<k;i++)nv.push([]);
+  byCall.forEach(function(j,x){nv[x%k].push(j);});
+  var nvMi=0,nvMin=0,nvAreas=0;
+  nv.forEach(function(list){
+    var prev=baseNi,z={};
+    list.forEach(function(j){var mi=legMiles(prev,j.ni);nvMi+=mi;nvMin+=legMin(mi);prev=j.ni;z[j.zone]=1;});
+    var hb=legMiles(prev,baseNi);nvMi+=hb;nvMin+=legMin(hb);
+    nvAreas+=Object.keys(z).length;
+  });
   nvMi=Math.round(nvMi);
 
-  var optMi=0,optMin=0;
-  d.routes.forEach(function(r){if(r){optMi+=r.miles;optMin+=routedMins(r);}});
+  var optMi=0,optMin=0,optAreas=0;
+  used.forEach(function(r){
+    var z={};
+    optMi+=r.miles;optMin+=routedMins(r);
+    r.stops.forEach(function(s){z[s.job.zone]=1;});
+    optAreas+=Object.keys(z).length;
+  });
 
   var s=state.settings;
   var mpg=parseFloat(s.mpg)||15, gas=parseFloat(s.gas)||3.35, rate=parseFloat(s.rate)||165;
@@ -581,12 +707,11 @@ function renderSavings(d){
   var weekFuel=fuel*5, weekHrs=minSaved*5/60;
   var extraCalls=Math.floor(minSaved/90);
   var mx=Math.max(nvMi,optMi)||1;
-  var zonesHit={};byCall.forEach(function(j){zonesHit[j.zone]=1;});
-  var nz=Object.keys(zonesHit).length;
+  function avg(x){return (x/k).toFixed(1).replace(/\.0$/,"");}
 
   $("#savings").innerHTML=
-  '<div class="sv-head"><h3>'+n+' stops, two ways to run the day</h3>'+
-   '<p>Same number of jobs. One day answers them in the order they rang, wherever they are; the other works a single zone with the hot jobs first.</p></div>'+
+  '<div class="sv-head"><h3>'+n+' stops on '+k+' truck'+(k>1?"s":"")+', two ways</h3>'+
+   '<p>Same calls, same trucks. One way hands each call to the next truck in the order the phone rang; the other gives each truck one part of the county, hot jobs first.</p></div>'+
   '<div class="sv-grid">'+
     '<div class="sv-cell win"><div class="k">Miles saved today</div><div class="v">'+miSaved+'<span class="u">mi</span></div></div>'+
     '<div class="sv-cell win"><div class="k">Windshield time back</div><div class="v">'+fmtDur(minSaved)+'</div></div>'+
@@ -595,12 +720,12 @@ function renderSavings(d){
   '</div>'+
   '<div class="sv-bars">'+
     bar("Call order",nvMi,mx,"var(--high)",nvMi+" mi")+
-    bar("Zone-batched",optMi,mx,"var(--cool)",optMi+" mi")+
+    bar("By area",optMi,mx,"var(--cool)",optMi+" mi")+
     '<p style="margin:4px 0 0;font-size:12.5px;color:var(--ink-2);line-height:1.55">'+
     (miSaved>4
-      ? 'Answering in call order touches <b>'+nz+' zone'+(nz>1?"s":"")+'</b> in one day \u2014 that is where the miles go, not the order of the stops inside a zone.'+
+      ? 'In call order each truck crosses <b>'+avg(nvAreas)+' areas</b> a day; grouped, <b>'+avg(optAreas)+'</b>. That is where the miles go.'+
         (extraCalls>0?' <b>'+fmtDur(minSaved)+' is roughly '+extraCalls+' more service call'+(extraCalls>1?"s":"")+'</b>, near $'+(extraCalls*rate)+' of work currently being spent on I-95.':'')
-      : 'Today\u2019s calls happen to sit close together, so batching wins little \u2014 the tool is honest about that. The savings show up on the days the calls are spread across the county.')+
+      : 'Today’s calls happen to sit close together, so grouping wins little — the tool is honest about that. The savings show up on the days the calls are spread across the county.')+
     '</p>'+
   '</div>';
 }
@@ -708,7 +833,7 @@ function readCall(raw){
   var t=String(raw||""), out={}, m, rest=t;
 
   m=t.match(/(?:^|\n)\s*name\s*[:\-]\s*([^\n,]+)/i) ||
-    t.match(/\b(?:this is|my name is|my name's|name is)\s+([A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+)?)/) ||
+    t.match(/\b(?:[Tt]his is|[Mm]y name is|[Mm]y name's|[Nn]ame is)\s+([A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+)?)/) ||
     t.match(/\b(?:[Tt]hanks|[Tt]hank you|[Rr]egards)[,!.\s-]+([A-Z][a-z'’-]+(?:\s+[A-Z][a-z'’-]+)?)\s*$/);
   if(m&&!findCity(m[1])&&!NOT_NAMES.test(m[1].trim()))
     out.name=m[1].trim().split(/\s+/).map(titleWord).join(" ");
@@ -863,9 +988,11 @@ function cityChoices(q){
   return starts.sort(shortFirst).concat(inside.sort(shortFirst)).slice(0,4);
 }
 function ikReview(d){
-  var ni=CITY_NI[d.city], z=zoneOf(ni===undefined?48:ni), a=acc(d.access);
-  var mins=duration({symptom:d.symptom,access:d.access,size:NEW_CALL.size,crew:NEW_CALL.crew});
-  var cut=cutoffFor(parseInt(state.hi,10)||90);
+  var a=acc(d.access), cut=cutoffFor(parseInt(state.hi,10)||90);
+  /* Where it would land if saved now, worked out by the same planner. */
+  var x=hydrate({id:"draft",created:Date.now(),status:"open",city:d.city,access:d.access,
+                 symptom:d.symptom,size:NEW_CALL.size,crew:NEW_CALL.crew});
+  var w=whereItGoes(x);
   var none='<em>none</em>';
   function tag(k){return d.read[k]?'<i>from text</i>':'';}
   function row(k,label,val){
@@ -874,7 +1001,9 @@ function ikReview(d){
   }
   return ikHead("Check it, then save","",false)+
     '<div class="readout">'+
-      cell("Zone",esc(z.name))+cell("Goes","Today")+cell("Block",fmtDur(mins))+
+      cell("Truck",w.truck?String(w.truck):"Full")+
+      cell(w.tomorrow?"Tomorrow":"Arrives",w.truck?fmtMin(w.arrive):"next AM")+
+      cell("Block",fmtDur(x.dur))+
       cell("Unit",a.tier===1?"by "+cut.txt:a.tier===2?"any time":"midday ok")+
     '</div>'+
     '<div class="ik-rev">'+
@@ -1035,31 +1164,31 @@ function ikSave(){
   clearDraft();
   saveLocal();
   go("today");
-  toast("Saved — "+(j.name||j.city)+" is on today’s run");
+  var w=whereItGoes(j);
+  toast(w.truck
+    ? "Saved \u2014 Truck "+w.truck+(w.tomorrow?" tomorrow":"")+", about "+fmtMin(w.arrive)
+    : "Saved \u2014 every truck is full, so it goes out first next morning");
 }
 
 /* ---------- queue ---------- */
 function renderQueue(){
-  var html="",any=false,open=openJobs();
-  var ems=open.filter(function(j){return j.urgency==="em";});
-  if(ems.length){
-    any=true;
-    html+='<div class="zgroup"><div class="zhead"><span class="zn" style="color:var(--high)">Emergency</span>'+
-      '<span class="zc">'+ems.length+' job'+(ems.length>1?"s":"")+'</span><span class="zd" style="color:var(--high)">Today, any zone</span></div>'+
-      '<div class="qlist">'+ems.map(qrow).join("")+'</div></div>';
-  }
-  ZONES.forEach(function(z){
-    var list=open.filter(function(j){return j.urgency!=="em"&&j.zone===z.id;});
-    if(!list.length)return;
-    any=true;
-    var mins=list.reduce(function(a,j){return a+j.dur;},0);
-    list.sort(function(a,b){return a.tier-b.tier||a.ni-b.ni;});
-    html+='<div class="zgroup"><div class="zhead"><span class="zn">'+esc(z.name)+'</span>'+
-      '<span class="zc">'+list.length+' · '+fmtDur(mins)+' · '+esc(z.range)+'</span>'+
-      '<span class="zd">'+esc(z.dayName)+'</span></div>'+
-      '<div class="qlist">'+list.map(qrow).join("")+'</div></div>';
+  var d=buildToday(), html="", when=d.day.tomorrow?"Tomorrow":"Today";
+  d.routes.forEach(function(r,i){
+    if(!r)return;
+    var jobs=r.stops.map(function(st){return st.job;});
+    var mins=jobs.reduce(function(a,j){return a+j.dur;},0);
+    html+='<div class="zgroup"><div class="zhead"><span class="zn">Truck '+(i+1)+'</span>'+
+      '<span class="zc">'+jobs.length+' · '+fmtDur(mins)+' · '+esc(areaName(jobs))+'</span>'+
+      '<span class="zd">'+when+'</span></div>'+
+      '<div class="qlist">'+r.stops.map(function(st){return qrow(st.job,fmtMin(st.arrive));}).join("")+'</div></div>';
   });
-  if(!any)html='<div class="card empty"><span class="disp">Empty board</span>Every call that comes in lands here first, then gets pulled into the day its zone comes up.</div>';
+  if(d.spill.length){
+    html+='<div class="zgroup"><div class="zhead"><span class="zn" style="color:var(--high)">Doesn’t fit</span>'+
+      '<span class="zc">'+d.spill.length+' call'+(d.spill.length>1?"s":"")+'</span>'+
+      '<span class="zd" style="color:var(--high)">Next morning, first</span></div>'+
+      '<div class="qlist">'+d.spill.map(function(j){return qrow(j,fmtDur(j.dur));}).join("")+'</div></div>';
+  }
+  if(!openJobs().length)html='<div class="card empty"><span class="disp">No open calls</span>Every call that comes in lands here, on the truck that will take it.</div>';
 
   /* Finishing a job used to delete it. Now it is kept: the history is his
      customer list, and Undo is the fix for a Done tapped by mistake. */
@@ -1086,10 +1215,10 @@ function renderQueue(){
     b.onclick=function(){reopenJob(b.getAttribute("data-undo"));};
   });
 }
-function qrow(j){
+function qrow(j,right){
   return '<div class="qrow"><span class="pill '+tonePill(j.tier)+'">'+(j.tier===1?"AM":j.tier===2?"OUT":"IN")+'</span>'+
     '<span><span class="qn">'+esc(j.name||"No name")+'</span> <span class="qm">'+esc(j.city)+' · '+esc(sym(j.symptom).label)+'</span></span>'+
-    '<span class="qr"><span class="qdur">'+fmtDur(j.dur)+'</span><button class="xbtn" data-del="'+j.id+'" title="Remove">&times;</button></span></div>';
+    '<span class="qr"><span class="qdur">'+esc(right)+'</span><button class="xbtn" data-del="'+j.id+'" title="Remove">&times;</button></span></div>';
 }
 function drow(j){
   var when=j.doneAt?new Date(j.doneAt).toLocaleDateString(undefined,{month:"short",day:"numeric"}):"";
@@ -1100,9 +1229,8 @@ function drow(j){
 
 /* ---------- rules tab ---------- */
 function renderRules(){
-  $("#zoneTable").innerHTML='<thead><tr><th>Zone</th><th>Covers</th><th>Route day</th></tr></thead><tbody>'+
-    ZONES.map(function(z){return '<tr><td><b>'+esc(z.name)+'</b></td><td>'+esc(z.range)+'</td><td class="n">'+esc(z.dayName)+'</td></tr>';}).join("")+
-    '<tr><td><b>Overflow</b></td><td>Whichever zone is stacked highest</td><td class="n">Friday</td></tr></tbody>';
+  $("#zoneTable").innerHTML='<thead><tr><th>Area</th><th>Covers</th></tr></thead><tbody>'+
+    ZONES.map(function(z){return '<tr><td><b>'+esc(z.name)+'</b></td><td>'+esc(z.range)+'</td></tr>';}).join("")+'</tbody>';
 
   $("#cutTable").innerHTML='<thead><tr><th>Forecast high</th><th>Attic/roof cutoff</th><th>Why</th></tr></thead><tbody>'+
     CUTOFFS.map(function(c,i){
@@ -1339,15 +1467,19 @@ function buildSheet(){
   var d=buildToday(),out=[];
   d.routes.forEach(function(r,i){
     if(!r)return;
+    var area=areaName(r.stops.map(function(st){return st.job;}));
     r.stops.forEach(function(st,k){
-      out.push({truck:i+1,n:k+1,of:r.stops.length,st:st,zone:d.zone,cut:d.cut});
+      out.push({truck:i+1,n:k+1,of:r.stops.length,st:st,area:area,cut:d.cut});
     });
   });
   return out;
 }
 function openSheet(i){
   sheetList=buildSheet();
-  if(!sheetList.length){toast("Nothing on the board for today");return;}
+  if(!sheetList.length){toast("Nothing on the board yet");return;}
+  /* Reading the lists out is dispatching, so from here the plan holds still. */
+  var day=planDay(planSettings());
+  if(state.dispatched!==day.key){state.dispatched=day.key;saveLocal();}
   sheetAt=Math.max(0,Math.min(i||0,sheetList.length-1));
   $("#sheet").hidden=false;
   document.body.style.overflow="hidden";
@@ -1368,7 +1500,7 @@ function renderSheet(){
   var e=sheetList[sheetAt], j=e.st.job, last=sheetAt===sheetList.length-1;
 
   $("#sheetWhere").innerHTML="Truck "+e.truck+" &middot; stop "+e.n+" of "+e.of+
-                             " &middot; "+esc(e.zone.name);
+                             " &middot; "+esc(e.area);
 
   var dots="",i;
   for(i=0;i<sheetList.length;i++){
@@ -1397,8 +1529,7 @@ function renderSheet(){
   if(j.note&&/[0-9]/.test(j.note))
     h+='<div class="sh-note"><div class="sh-k">Exactly as written</div><p>'+esc(j.note)+"</p></div>";
   if(e.st.late)h+='<div class="sh-warn">Past the '+e.cut.txt+" cutoff for "+
-                  esc(acc(j.access).label.toLowerCase())+" work. Move it to tomorrow morning.</div>";
-  if(j.urgency==="em")h+='<div class="sh-warn hot">Emergency &mdash; this one broke the zone to get on today.</div>';
+                  esc(acc(j.access).label.toLowerCase())+" work. Keep it short and take water.</div>";
 
   if(j.phone)h+='<a class="sh-call" href="tel:'+esc(j.phone.replace(/[^0-9+]/g,""))+'">Call '+esc(j.phone)+"</a>";
 
@@ -1498,12 +1629,11 @@ function closeWeek(){
   $("#week").hidden=true;
   document.body.style.overflow="";
 }
-function weekJobRow(j){
+function weekJobRow(j,time){
   var bits=[sym(j.symptom).label,acc(j.access).label,size(j.size).label];
   if(j.crew===2)bits.push("2 techs");
-  if(j.urgency==="em")bits.push("EMERGENCY");
   return '<div class="wk-job">'+
-    '<div class="wk-j1"><b>'+esc(j.name||"No name")+'</b>'+
+    '<div class="wk-j1">'+(time?'<span class="mono">'+esc(time)+'</span>':'')+'<b>'+esc(j.name||"No name")+'</b>'+
       (j.phone?'<span class="mono">'+esc(j.phone)+'</span>':'')+
       (j.example?'<i class="wk-ex">example</i>':'')+'</div>'+
     '<div class="wk-j2">'+esc([j.addr,j.city].filter(Boolean).join(", "))+'</div>'+
@@ -1525,21 +1655,19 @@ function renderWeek(){
     return;
   }
 
-  var ems=open.filter(function(j){return j.urgency==="em";});
-  if(ems.length){
-    h+='<div class="wk-group"><div class="wk-head hot">Emergencies &middot; '+ems.length+'</div>';
-    ems.forEach(function(j){h+=weekJobRow(j);});
-    h+='</div>';
-  }
-  ZONES.forEach(function(z){
-    var list=open.filter(function(j){return j.urgency!=="em"&&j.zone===z.id;});
-    if(!list.length)return;
-    list.sort(function(a,b){return a.tier-b.tier||a.ni-b.ni;});
-    h+='<div class="wk-group"><div class="wk-head">'+esc(z.name)+' &middot; '+
-       esc(z.dayName)+' &middot; '+list.length+'</div>';
-    list.forEach(function(j){h+=weekJobRow(j);});
+  var d=buildToday(), when=d.day.tomorrow?"tomorrow":"today";
+  d.routes.forEach(function(r,i){
+    if(!r)return;
+    h+='<div class="wk-group"><div class="wk-head">Truck '+(i+1)+' &middot; '+
+       esc(areaName(r.stops.map(function(st){return st.job;})))+' &middot; '+when+'</div>';
+    r.stops.forEach(function(st){h+=weekJobRow(st.job,fmtMin(st.arrive));});
     h+='</div>';
   });
+  if(d.spill.length){
+    h+='<div class="wk-group"><div class="wk-head hot">Didn’t fit &middot; first thing next morning &middot; '+d.spill.length+'</div>';
+    d.spill.forEach(function(j){h+=weekJobRow(j,"");});
+    h+='</div>';
+  }
 
   var s=state.settings;
   h+='<div class="wk-foot">Setup — base '+esc(s.base)+' · start '+esc(s.start)+
@@ -1566,6 +1694,7 @@ function go(t){
   render();
 }
 function render(){
+  if(state.ready)commitPlan();
   var cut=cutoffFor(parseInt(state.hi,10)||90);
   $("#cutoffTxt").textContent=cut.txt;
   $("#hi").value=state.hi;
@@ -1608,19 +1737,26 @@ render();
 function seedExamples(){
   state.jobs=examples(); state.seeded=true; saveLocal(); render();
 }
+/* state.ready stays false until IndexedDB has been read. Until then the plan
+   is drawn but never written: saving a plan built on a stale localStorage copy
+   would stamp that copy newer than the real data in IndexedDB, and the stale
+   copy would win the next boot. */
 idbLoad().then(function(rec){
   state.idbOk=true;
   if(rec && (rec.savedAt||0) >= (state.savedAt||0)){
-    adoptRecord(rec);
-    mirrorToLocal(rec);   // rebuild the mirror now, not at the next save
-    render(); return;                              // the newer copy wins
+    adoptRecord(rec);                              // the newer copy wins
+    mirrorToLocal(rec);                            // rebuild the mirror now, not at the next save
+  }else if(rec || hadLocal || state.seeded){
+    idbSave(snapshot());                           // localStorage was ahead, or first run: sync it up
+  }else{
+    state.ready=true; seedExamples(); return;      // a genuinely new device
   }
-  if(rec){ idbSave(snapshot()); return; }          // localStorage was ahead; sync it up
-  if(hadLocal || state.seeded){ idbSave(snapshot()); return; }   // first run: migrate
-  seedExamples();                                  // a genuinely new device
+  state.ready=true; render();
 }).catch(function(){
   state.idbOk=false;                               // no IndexedDB; the mirror carries on
-  if(!hadLocal && !state.seeded) seedExamples();
+  state.ready=true;
+  if(!hadLocal && !state.seeded){ seedExamples(); return; }
+  render();
 });
 
 /* Ask the browser not to evict this data when the phone runs short on space.
