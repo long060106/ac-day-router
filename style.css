@@ -501,6 +501,35 @@ td.n{font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums;whi
 .smsg summary{cursor:pointer;font-weight:600}
 .smsg p{margin:4px 0 0;white-space:pre-wrap;color:var(--ink-2)}
 
+/* ============================================================
+   FINISH VISIT + PICKUPS
+   ============================================================ */
+.fin-card{max-width:440px}
+.fin-q{font-family:Archivo,"Helvetica Neue",Arial,sans-serif;font-size:24px;font-weight:700;line-height:1.15;margin:6px 0 0}
+.fin-card .ik-opts{margin-top:16px}
+.fin-next{margin:10px 0 18px;font-size:15px;line-height:1.5;color:var(--ink-2)}
+.fin-next b{color:var(--ink)}
+.fin-hint{display:block;margin-top:8px;font-size:12.5px;color:var(--charge)}
+.fin-foot{margin-top:14px;text-align:center}
+.fin-foot .linkish{font-size:14px}
+
+.pickups{margin:14px 0 4px;border-left:3px solid var(--charge)}
+.pk-row{display:grid;grid-template-columns:58px 1fr;gap:10px;align-items:baseline;padding:8px 0;border-bottom:1px solid var(--line-2);font-size:14px;line-height:1.35}
+.pk-row:last-of-type{border-bottom:none}
+.pk-row .t{font-weight:600;color:var(--charge)}
+.pk-row small{color:var(--ink-3);font-size:12.5px}
+.pk-hint{margin:8px 0 0;font-size:12.5px;color:var(--charge)}
+.pickup{
+  display:grid;grid-template-columns:62px 1fr;gap:12px;align-items:baseline;
+  margin-left:4px;padding:9px 12px 9px 0;background:var(--charge-soft);border-radius:var(--r);
+  font-size:13.5px;line-height:1.35;color:var(--ink);
+}
+.pickup .t{text-align:right;font-weight:600;font-size:14px;color:var(--charge)}
+.sh-pick{background:var(--charge-soft)}
+.wk-pick{border-left-color:var(--charge)}
+.dist-row{display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:center;margin-bottom:8px}
+.dist-row input[type=text],.dist-row select{min-height:42px;padding:8px 10px}
+
 /* ---- finished jobs, under the Waiting list ---- */
 .qlist.qdone{border-radius:var(--r)}
 .qmore{font-size:12.5px;color:var(--ink-3);margin:8px 2px 0}

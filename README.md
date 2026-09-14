@@ -25,6 +25,16 @@ phone.
   (`LATE_HOT_MI`). If the calls don't all fit, the newest are set aside, then fitted into
   whatever room is left on any truck — moving one already-placed call to another truck
   if that opens the room. Only calls that fit nowhere wait for the next morning.
+- **Finish visit.** "Done" asks, one screen at a time: fixed? → a part or a new AC? →
+  Home Depot or distributor / outside, inside or both units. Anything not fixed becomes
+  a return-trip job that keeps the first call's time, and the app says where it landed.
+- **Replacements and pickups.** A replacement takes 2 techs and the hours set in setup.
+  Before the first job that needs equipment, the truck stops at whichever of his
+  distributors adds the least driving — never before they open — and loads up to the
+  truckload limit. An attic or roof replacement must be *finished* by the heat cutoff,
+  so a second one on the same truck is not allowed: one per truck per morning. The
+  replacement hours, opening time and truckload are placeholders until he gives real
+  numbers.
 - **The plan locks once the day is dispatched.** Until the start time, or until the call
   sheet is opened (reading it out is how he dispatches), the split is redone from
   scratch whenever a call is added — so calls entered the night before still get the
@@ -140,4 +150,4 @@ differently there.
 - [x] **04** Backup — 7-day nag banner, `navigator.share()` to the iOS share sheet, restore via file picker, screenshottable Week view
 - [x] **05** Job status instead of deletion, paste-a-text intake, one question per screen
 - [x] **06** Scheduler — as soon as possible, grouped by area each day, new calls placed on the best truck
-- [ ] **07** After checking the AC — fixed / part / new unit, morning pickups, replacements per day
+- [x] **07** After checking the AC — fixed / part / new unit, morning pickups, replacements per day

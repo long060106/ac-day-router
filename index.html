@@ -92,7 +92,7 @@
     <div class="card pad" style="margin-bottom:14px">
       <div class="eyebrow">Rule 2 — Hot places early</div>
       <h3 class="disp" style="font-size:15.5px;margin:5px 0 7px">Attic and roof before the cutoff. Indoor units in the afternoon.</h3>
-      <p style="margin:0 0 12px;color:var(--ink-2);font-size:13.5px">A South Florida attic passes 130–140°F within minutes of a mid-90s afternoon. 6–9a is the window for real attic work; 9–10:30a is short diagnostics only; 11a–5p should be emergencies only. So the day sorts hot-first, and the app moves any attic job that lands past the cutoff to the next morning instead of cooking a tech.</p>
+      <p style="margin:0 0 12px;color:var(--ink-2);font-size:13.5px">A South Florida attic passes 130–140°F within minutes of a mid-90s afternoon. 6–9a is the window for real attic work; 9–10:30a is short diagnostics only; 11a–5p should be emergencies only. So the day sorts hot-first, and an attic check that still lands past the cutoff goes out flagged: keep it short. A replacement up there has to be finished by the cutoff, not just started, so it goes first on its truck, straight from the distributor, and only one fits per truck per morning. One that can't be finished in time goes first thing the next morning.</p>
       <div class="tscroll"><table id="cutTable"></table></div>
     </div>
 
@@ -109,6 +109,11 @@
       <div class="eyebrow">Setup</div>
       <h3 class="disp" style="font-size:15.5px;margin:5px 0 10px">Numbers to match his truck</h3>
       <div id="settingsForm"></div>
+
+      <div style="height:20px"></div>
+      <div class="eyebrow">Where new ACs come from</div>
+      <h3 class="disp" style="font-size:15.5px;margin:5px 0 9px">Distributors</h3>
+      <div id="distForm"></div>
 
       <div style="height:20px"></div>
       <div class="eyebrow">Where his work is stored</div>
@@ -173,6 +178,14 @@
       <button class="btn ghost" id="mCancel">Cancel</button>
       <button class="btn" id="mOk">OK</button>
     </div>
+  </div>
+</div>
+
+<!-- ================= FINISH VISIT ================= -->
+<!-- Asked at the customer's house after checking the AC, one question per screen. -->
+<div class="modal" id="fin" hidden>
+  <div class="modal-card fin-card" role="dialog" aria-modal="true" aria-label="Finish visit">
+    <div id="finBody"></div>
   </div>
 </div>
 
